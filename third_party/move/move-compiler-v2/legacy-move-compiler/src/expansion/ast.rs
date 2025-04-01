@@ -517,6 +517,7 @@ pub enum Exp_ {
         TypedLValueList,
         Box<Exp>,
         LambdaCaptureKind,
+        // optional spec block for lambda
         Option<Box<Exp>>,
     ),
     Quant(

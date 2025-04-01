@@ -168,7 +168,7 @@ impl ConditionKind {
     }
 
     pub fn allowed_on_lambda_spec(&self) -> bool {
-        // TODO(teng): support all conditions allowed in `allowed_on_fun_decl`
+        // TODO(#16256): support all conditions allowed in `allowed_on_fun_decl`
         use ConditionKind::*;
         matches!(
             self,
@@ -675,7 +675,14 @@ pub enum ExpData {
     /// Represents an invocation of a function value, as a lambda.
     Invoke(NodeId, Exp, Vec<Exp>),
     /// Represents a lambda.
-    Lambda(NodeId, Pattern, Exp, LambdaCaptureKind, Option<Exp>),
+    Lambda(
+        NodeId,
+        Pattern,
+        Exp,
+        LambdaCaptureKind,
+        /// Optional spec block for lambda
+        Option<Exp>,
+    ),
     /// Represents a quantified formula over multiple variables and ranges.
     Quant(
         NodeId,

@@ -114,7 +114,7 @@ impl SpecBlockContext {
     pub fn allow_old(&self) -> bool {
         use SpecBlockContext::*;
         match self {
-            FunctionCodeV2(_, _, _) => false, // TODO(tengzhang): add support of old(..) to spec of lambda expression
+            FunctionCodeV2(_, _, _) => false, // TODO(#16256): add support of old(..) to spec of lambda expression
             _ => true,
         }
     }
@@ -2393,7 +2393,8 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
                         }
                         StructInvariant
                     },
-                    SpecBlockContext::Function(..) => {
+                    SpecBlockContext::Function(..)
+                    | SpecBlockContext::FunctionCodeV2(_, _, Some(..)) => {
                         if !tys.is_empty() {
                             self.parent.env.error(
                                 &self.parent.to_loc(&kind.loc),
@@ -2410,15 +2411,6 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
                             )
                         }
                         LoopInvariant
-                    },
-                    SpecBlockContext::FunctionCodeV2(_, _, Some(..)) => {
-                        if !tys.is_empty() {
-                            self.parent.env.error(
-                                &self.parent.to_loc(&kind.loc),
-                                "type parameters are not allowed in function invariants",
-                            )
-                        }
-                        FunctionInvariant
                     },
                     SpecBlockContext::Schema(..) => {
                         if !tys.is_empty() {

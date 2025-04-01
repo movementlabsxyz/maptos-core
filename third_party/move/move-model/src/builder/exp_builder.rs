@@ -90,6 +90,7 @@ pub(crate) struct ExpTranslator<'env, 'translator, 'module_translator> {
     /// A mapping from SpecId to SpecBlock (expansion ast)
     pub spec_block_map: BTreeMap<EA::SpecId, EA::SpecBlock>,
     /// A mapping from SpecId to the parameter and return type of lambda
+    /// which is populated during translation of lambda
     pub spec_lambda_map: BTreeMap<EA::SpecId, (Pattern, Type)>,
     /// A mapping from expression node id to associated placeholders which are to be processed
     /// after function body checking and all type inference is done.
@@ -1995,8 +1996,8 @@ impl<'env, 'translator, 'module_translator> ExpTranslator<'env, 'translator, 'mo
                                     let mut lambda_info =
                                         self.spec_lambda_map.get(spec_id).cloned();
                                     if let Some((pat, ty)) = &lambda_info {
-                                        let nty: Type = subs.specialize_with_defaults(ty);
-                                        lambda_info = Some((pat.clone(), nty.clone()));
+                                        lambda_info =
+                                            Some((pat.clone(), subs.specialize_with_defaults(ty)));
                                     }
                                     self.translate_spec_block(&loc, locals, &block, lambda_info)
                                 } else {

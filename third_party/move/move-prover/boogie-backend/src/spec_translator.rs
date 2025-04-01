@@ -272,13 +272,13 @@ impl<'env> SpecTranslator<'env> {
                 .filter(|cond| cond.kind == kind)
                 .collect_vec()
         };
-        let emit_condition = |conditions: &[Condition], reverse: bool| {
+        let emit_condition = |conditions: &[Condition], negate: bool| {
             for (i, cond) in conditions.iter().enumerate() {
                 if i > 0 {
                     emitln!(self.writer, " && ");
                 }
                 for (j, exp) in cond.all_exps().enumerate() {
-                    emit!(self.writer, "{}(", if reverse { "!" } else { "" });
+                    emit!(self.writer, "{}(", if negate { "!" } else { "" });
                     self.translate_exp(exp);
                     emit!(self.writer, ")");
                     if j > 0 {
@@ -327,7 +327,7 @@ impl<'env> SpecTranslator<'env> {
                     .map(|Parameter(n, ..)| { format!("{}", n.display(module_env.symbol_pool())) })
                     .join(", ")
             );
-            //TODO(teng): currently spec function does not support tuple as return type
+            //TODO(#16256): currently spec function does not support tuple as return type
             for exp in cond.all_exps() {
                 if !param_list.is_empty() {
                     emitln!(
@@ -529,7 +529,7 @@ impl<'env> SpecTranslator<'env> {
                 }
             }
             // Generate axioms from the spec block attached to the spec function
-            // TODO(teng): support general condition kinds, exploration use of `spec_translator` in `move_model`
+            // TODO(#16256): support general condition kinds, exploration use of `spec_translator` in `move_model`
             self.generate_spec_function_axioms(fun, module_env, boogie_name, param_list);
         } else {
             emitln!(self.writer, " {");

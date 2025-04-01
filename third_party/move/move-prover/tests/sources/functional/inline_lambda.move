@@ -1,5 +1,5 @@
 module 0x42::Test {
-    // TODO: add it back when we support mutable parameter/free variables for lambda expression in spec
+    // TODO(#16256): add it back when we support mutable parameter/free variables for lambda expression in spec
     // use std::vector;
     // use std::signer;
 
