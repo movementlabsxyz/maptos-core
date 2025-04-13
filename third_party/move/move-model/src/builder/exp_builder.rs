@@ -1100,7 +1100,7 @@ impl<'env, 'translator, 'module_translator> ExpTranslator<'env, 'translator, 'mo
                     &loc,
                     "read/write access specifiers.",
                     // TODO: should we move this into 2.3?
-                    LanguageVersion::V2_2,
+                    LanguageVersion::V2_3,
                 )?;
             },
         }
