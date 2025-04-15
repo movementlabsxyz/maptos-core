@@ -748,7 +748,7 @@ siphasher = "0.3.10"
 serde = { version = "1.0.193", features = ["derive", "rc"] }
 serde-big-array = "0.5.1"
 serde_bytes = "0.11.6"
-serde_json = { version = "1.0.81", features = [
+serde_json = { version = "1.0.140", features = [
     "preserve_order",
     "arbitrary_precision",
 ] } # Note: arbitrary_precision is required to parse u256 in JSON
