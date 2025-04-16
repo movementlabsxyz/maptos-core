@@ -5,7 +5,7 @@ use crate::{
     genesis::enable_sync_only_mode, smoke_test_environment::SwarmBuilder,
     utils::get_on_chain_resource,
 };
-use aptos::common::types::GasOptions;
+use movement::common::types::GasOptions;
 use aptos_config::config::{OverrideNodeConfig, PersistableConfig};
 use aptos_forge::{NodeExt, Swarm, SwarmExt};
 use aptos_logger::{debug, info};

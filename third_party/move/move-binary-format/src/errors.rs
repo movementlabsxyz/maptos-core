@@ -38,6 +38,7 @@ pub enum Location {
     Undefined,
     Script,
     Module(ModuleId),
+    Constraint(String),
 }
 
 /// A representation of the execution state (e.g., stack trace) at an
@@ -118,6 +119,21 @@ impl VMError {
                             status_code: major_status,
                             sub_status,
                             message,
+                        };
+                    },
+                    Location::Constraint(constraint) => {
+                        let message_string = message.unwrap_or_else(|| "opaque error".to_string());
+
+                        return VMStatus::Error {
+                            status_code: major_status,
+                            sub_status,
+                            message: Some(
+                                format!(
+                                    "constraint violation: {} with: {}",
+                                    constraint, message_string
+                                )
+                                .to_string(),
+                            ),
                         };
                     },
                 };
@@ -252,6 +268,7 @@ impl VMError {
             Location::Module(id) => {
                 format!("0x{}::{}", id.address().short_str_lossless(), id.name())
             },
+            Location::Constraint(constraint) => format!("constraint: {}", constraint),
         };
         let indices = format!("{:?}", self.indices());
         let offsets = format!("{:?}", self.offsets());
@@ -536,6 +553,7 @@ impl fmt::Display for Location {
             Location::Undefined => write!(f, "UNDEFINED"),
             Location::Script => write!(f, "Script"),
             Location::Module(id) => write!(f, "Module {:?}", id),
+            Location::Constraint(constraint) => write!(f, "Constraint {}", constraint),
         }
     }
 }
