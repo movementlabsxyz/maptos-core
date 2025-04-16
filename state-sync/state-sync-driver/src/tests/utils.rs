@@ -18,6 +18,7 @@ use aptos_storage_service_notifications::StorageServiceNotificationListener;
 use aptos_storage_service_types::responses::CompleteDataRange;
 use aptos_types::{
     account_address::AccountAddress,
+    account_config::NEW_EPOCH_EVENT_V2_MOVE_TYPE_TAG,
     aggregate_signature::AggregateSignature,
     block_info::BlockInfo,
     chain_id::ChainId,
@@ -31,9 +32,10 @@ use aptos_types::{
     },
     state_store::state_value::StateValueChunkWithProof,
     transaction::{
-        ExecutionStatus, RawTransaction, Script, SignedTransaction, Transaction,
-        TransactionAuxiliaryData, TransactionInfo, TransactionListWithProof, TransactionOutput,
-        TransactionOutputListWithProof, TransactionPayload, TransactionStatus, Version,
+        use_case::UseCaseAwareTransaction, ExecutionStatus, RawTransaction, Script,
+        SignedTransaction, Transaction, TransactionAuxiliaryData, TransactionInfo,
+        TransactionListWithProof, TransactionOutput, TransactionOutputListWithProof,
+        TransactionPayload, TransactionStatus, Version,
     },
     validator_verifier::ValidatorVerifier,
     waypoint::Waypoint,
@@ -79,6 +81,13 @@ pub fn create_epoch_ending_ledger_info_for_epoch(
 pub fn create_event(event_key: Option<EventKey>) -> ContractEvent {
     let event_key = event_key.unwrap_or_else(EventKey::random);
     ContractEvent::new_v1(event_key, 0, TypeTag::Bool, bcs::to_bytes(&0).unwrap())
+}
+
+pub fn create_reconfig_event() -> ContractEvent {
+    ContractEvent::new_v2(
+        NEW_EPOCH_EVENT_V2_MOVE_TYPE_TAG.clone(),
+        bcs::to_bytes(&0).unwrap(),
+    )
 }
 
 /// Creates a test driver configuration for full nodes
@@ -278,9 +287,13 @@ pub async fn verify_commit_notification(
     let mempool_notification = mempool_notification_listener.select_next_some().await;
     let committed_transactions: Vec<CommittedTransaction> = expected_transactions
         .into_iter()
-        .map(|txn| CommittedTransaction {
-            sender: txn.try_as_signed_user_txn().unwrap().sender(),
-            sequence_number: 0,
+        .map(|txn| {
+            let signed = txn.try_as_signed_user_txn().unwrap();
+            CommittedTransaction {
+                sender: signed.sender(),
+                sequence_number: 0,
+                use_case: signed.parse_use_case(),
+            }
         })
         .collect();
     assert_eq!(mempool_notification.transactions, committed_transactions);

@@ -25,7 +25,7 @@ use aptos_consensus_types::{
     quorum_cert::QuorumCert,
 };
 use aptos_crypto::HashValue;
-use aptos_executor_types::StateComputeResult;
+use aptos_executor_types::state_compute_result::StateComputeResult;
 use aptos_infallible::RwLock;
 use aptos_logger::{error, info};
 use aptos_storage_interface::DbReader;
@@ -141,7 +141,9 @@ impl OrderedNotifier for OrderedNotifierAdapter {
         ordered_nodes: Vec<Arc<CertifiedNode>>,
         failed_author: Vec<(Round, Author)>,
     ) {
-        let anchor = ordered_nodes.last().unwrap();
+        let anchor = ordered_nodes
+            .last()
+            .expect("ordered_nodes shuld not be empty");
         let epoch = anchor.epoch();
         let round = anchor.round();
         let timestamp = anchor.metadata().timestamp();
@@ -295,11 +297,13 @@ impl StorageAdapter {
                 usize::try_from(*index)
                     .map_err(|_err| anyhow!("index {} out of bounds", index))
                     .and_then(|index| {
-                        validators.get(index).cloned().ok_or(anyhow!(
-                            "index {} is larger than number of validators {}",
-                            index,
-                            validators.len()
-                        ))
+                        validators.get(index).cloned().ok_or_else(|| {
+                            anyhow!(
+                                "index {} is larger than number of validators {}",
+                                index,
+                                validators.len()
+                            )
+                        })
                     })
             })
             .collect()
@@ -385,15 +389,15 @@ impl DAGStorage for StorageAdapter {
         for i in 1..=std::cmp::min(k, resource.length()) {
             let idx = (resource.next_idx() + resource.max_capacity() - i as u32)
                 % resource.max_capacity();
-            let new_block_event = bcs::from_bytes::<NewBlockEvent>(
-                self.aptos_db
-                    .get_state_value_by_version(
-                        &StateKey::table_item(handle, &bcs::to_bytes(&idx).unwrap()),
-                        version,
-                    )?
-                    .ok_or_else(|| format_err!("Table item doesn't exist"))?
-                    .bytes(),
-            )?;
+            // idx is an u32, so it's not possible to fail to convert it to bytes
+            let idx_bytes = bcs::to_bytes(&idx)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize index: {:?}", e))?;
+            let state_value = self
+                .aptos_db
+                .get_state_value_by_version(&StateKey::table_item(handle, &idx_bytes), version)?
+                .ok_or_else(|| anyhow::anyhow!("Table item doesn't exist"))?;
+            let new_block_event = bcs::from_bytes::<NewBlockEvent>(state_value.bytes())
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize NewBlockEvent: {:?}", e))?;
             if self
                 .epoch_to_validators
                 .contains_key(&new_block_event.epoch())

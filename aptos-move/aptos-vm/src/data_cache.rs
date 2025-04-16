@@ -3,31 +3,29 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Scratchpad for on chain values during the execution.
 
-use crate::{
-    gas::get_gas_config_from_storage,
-    move_vm_ext::{
-        resource_state_key, AptosMoveResolver, AsExecutorView, AsResourceGroupView,
-        ResourceGroupResolver,
-    },
+use crate::move_vm_ext::{
+    resource_state_key, AptosMoveResolver, AsExecutorView, AsResourceGroupView,
+    ResourceGroupResolver,
 };
 use aptos_aggregator::{
     bounded_math::SignedU128,
     resolver::{TAggregatorV1View, TDelayedFieldView},
-    types::{DelayedFieldValue, DelayedFieldsSpeculativeError, PanicOr},
+    types::{DelayedFieldValue, DelayedFieldsSpeculativeError},
 };
 use aptos_table_natives::{TableHandle, TableResolver};
 use aptos_types::{
-    delayed_fields::PanicError,
+    error::{PanicError, PanicOr},
     on_chain_config::{ConfigStorage, Features, OnChainConfig},
     state_store::{
-        errors::StateviewError,
+        errors::StateViewError,
         state_key::StateKey,
         state_storage_usage::StateStorageUsage,
         state_value::{StateValue, StateValueMetadata},
         StateView, StateViewId,
     },
-    vm::configs::aptos_prod_deserializer_config,
+    vm::module_metadata::get_metadata,
 };
+use aptos_vm_environment::gas::get_gas_feature_version;
 use aptos_vm_types::{
     resolver::{
         ExecutorView, ResourceGroupSize, ResourceGroupView, StateStorageView, TResourceGroupView,
@@ -35,15 +33,15 @@ use aptos_vm_types::{
     resource_group_adapter::ResourceGroupAdapter,
 };
 use bytes::Bytes;
-use move_binary_format::{deserializer::DeserializerConfig, errors::*, CompiledModule};
+use move_binary_format::errors::*;
 use move_core_types::{
-    account_address::AccountAddress,
-    language_storage::{ModuleId, StructTag},
-    metadata::Metadata,
-    resolver::{resource_size, ModuleResolver, ResourceResolver},
+    account_address::AccountAddress, language_storage::StructTag, metadata::Metadata,
     value::MoveTypeLayout,
 };
-use move_vm_types::delayed_values::delayed_field_id::DelayedFieldID;
+use move_vm_types::{
+    delayed_values::delayed_field_id::DelayedFieldID,
+    resolver::{resource_size, ResourceResolver},
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -54,7 +52,7 @@ pub fn get_resource_group_member_from_metadata(
     struct_tag: &StructTag,
     metadata: &[Metadata],
 ) -> Option<StructTag> {
-    let metadata = aptos_framework::get_metadata(metadata)?;
+    let metadata = get_metadata(metadata)?;
     metadata
         .struct_attributes
         .get(struct_tag.name.as_ident_str().as_str())?
@@ -69,7 +67,6 @@ pub fn get_resource_group_member_from_metadata(
 /// for (non-group) resources and subsequent handling in the StorageAdapter itself.
 pub struct StorageAdapter<'e, E> {
     executor_view: &'e E,
-    deserializer_config: DeserializerConfig,
     resource_group_view: ResourceGroupAdapter<'e>,
     accessed_groups: RefCell<HashSet<StateKey>>,
 }
@@ -81,7 +78,6 @@ impl<'e, E: ExecutorView> StorageAdapter<'e, E> {
         features: &Features,
         maybe_resource_group_view: Option<&'e dyn ResourceGroupView>,
     ) -> Self {
-        let deserializer_config = aptos_prod_deserializer_config(features);
         let resource_group_adapter = ResourceGroupAdapter::new(
             maybe_resource_group_view,
             executor_view,
@@ -89,17 +85,12 @@ impl<'e, E: ExecutorView> StorageAdapter<'e, E> {
             features.is_resource_groups_split_in_vm_change_set_enabled(),
         );
 
-        Self::new(executor_view, deserializer_config, resource_group_adapter)
+        Self::new(executor_view, resource_group_adapter)
     }
 
-    fn new(
-        executor_view: &'e E,
-        deserializer_config: DeserializerConfig,
-        resource_group_view: ResourceGroupAdapter<'e>,
-    ) -> Self {
+    fn new(executor_view: &'e E, resource_group_view: ResourceGroupAdapter<'e>) -> Self {
         Self {
             executor_view,
-            deserializer_config,
             resource_group_view,
             accessed_groups: RefCell::new(HashSet::new()),
         }
@@ -172,39 +163,14 @@ impl<'e, E: ExecutorView> ResourceGroupResolver for StorageAdapter<'e, E> {
 impl<'e, E: ExecutorView> AptosMoveResolver for StorageAdapter<'e, E> {}
 
 impl<'e, E: ExecutorView> ResourceResolver for StorageAdapter<'e, E> {
-    type Error = PartialVMError;
-
     fn get_resource_bytes_with_metadata_and_layout(
         &self,
         address: &AccountAddress,
         struct_tag: &StructTag,
         metadata: &[Metadata],
         maybe_layout: Option<&MoveTypeLayout>,
-    ) -> Result<(Option<Bytes>, usize), Self::Error> {
+    ) -> PartialVMResult<(Option<Bytes>, usize)> {
         self.get_any_resource_with_layout(address, struct_tag, metadata, maybe_layout)
-    }
-}
-
-impl<'e, E: ExecutorView> ModuleResolver for StorageAdapter<'e, E> {
-    type Error = PartialVMError;
-
-    fn get_module_metadata(&self, module_id: &ModuleId) -> Vec<Metadata> {
-        let module_bytes = match self.get_module(module_id) {
-            Ok(Some(bytes)) => bytes,
-            _ => return vec![],
-        };
-        let module =
-            match CompiledModule::deserialize_with_config(&module_bytes, &self.deserializer_config)
-            {
-                Ok(module) => module,
-                _ => return vec![],
-            };
-        module.metadata
-    }
-
-    fn get_module(&self, module_id: &ModuleId) -> Result<Option<Bytes>, Self::Error> {
-        self.executor_view
-            .get_module_bytes(&StateKey::module_id(module_id))
     }
 }
 
@@ -301,25 +267,29 @@ pub trait AsMoveResolver<S> {
 impl<S: StateView> AsMoveResolver<S> for S {
     fn as_move_resolver(&self) -> StorageAdapter<S> {
         let features = Features::fetch_config(self).unwrap_or_default();
-        let deserializer_config = aptos_prod_deserializer_config(&features);
-
-        let (_, gas_feature_version) = get_gas_config_from_storage(self);
+        let gas_feature_version = get_gas_feature_version(self);
         let resource_group_adapter = ResourceGroupAdapter::new(
             None,
             self,
             gas_feature_version,
             features.is_resource_groups_split_in_vm_change_set_enabled(),
         );
-        StorageAdapter::new(self, deserializer_config, resource_group_adapter)
+        StorageAdapter::new(self, resource_group_adapter)
     }
 }
 
 impl<'e, E: ExecutorView> StateStorageView for StorageAdapter<'e, E> {
+    type Key = StateKey;
+
     fn id(&self) -> StateViewId {
         self.executor_view.id()
     }
 
-    fn get_usage(&self) -> Result<StateStorageUsage, StateviewError> {
+    fn read_state_value(&self, state_key: &Self::Key) -> Result<(), StateViewError> {
+        self.executor_view.read_state_value(state_key)
+    }
+
+    fn get_usage(&self) -> Result<StateStorageUsage, StateViewError> {
         self.executor_view.get_usage()
     }
 }
@@ -365,8 +335,6 @@ pub(crate) mod tests {
             resource_groups_split_in_vm_change_set_enabled,
         );
 
-        let features = Features::fetch_config(state_view).unwrap_or_default();
-        let deserializer_config = aptos_prod_deserializer_config(&features);
-        StorageAdapter::new(state_view, deserializer_config, group_adapter)
+        StorageAdapter::new(state_view, group_adapter)
     }
 }

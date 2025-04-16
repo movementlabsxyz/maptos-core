@@ -4,7 +4,8 @@
 use move_binary_format::file_format::*;
 use move_bytecode_verifier::dependencies;
 use move_core_types::{
-    account_address::AccountAddress, identifier::Identifier, vm_status::StatusCode,
+    ability::AbilitySet, account_address::AccountAddress, identifier::Identifier,
+    vm_status::StatusCode,
 };
 
 fn mk_script_function_module() -> CompiledModule {
@@ -35,6 +36,7 @@ fn mk_script_function_module() -> CompiledModule {
                 return_: SignatureIndex(0),
                 type_parameters: vec![],
                 access_specifiers: None,
+                attributes: vec![],
             },
             // fun g_fn<T>()
             FunctionHandle {
@@ -44,6 +46,7 @@ fn mk_script_function_module() -> CompiledModule {
                 return_: SignatureIndex(0),
                 type_parameters: vec![AbilitySet::EMPTY],
                 access_specifiers: None,
+                attributes: vec![],
             },
         ],
         function_defs: vec![
@@ -70,6 +73,9 @@ fn mk_script_function_module() -> CompiledModule {
                 }),
             },
         ],
+        struct_variant_handles: vec![],
+        struct_variant_instantiations: vec![],
+        variant_field_handles: vec![],
         signatures: vec![
             Signature(vec![]), // void
         ],
@@ -82,6 +88,7 @@ fn mk_script_function_module() -> CompiledModule {
         struct_def_instantiations: vec![],
         function_instantiations: vec![],
         field_instantiations: vec![],
+        variant_field_instantiations: vec![],
     };
     move_bytecode_verifier::verify_module(&m).unwrap();
     m
@@ -127,6 +134,7 @@ fn mk_invoking_module(use_generic: bool, valid: bool) -> CompiledModule {
                 return_: SignatureIndex(0),
                 type_parameters: vec![],
                 access_specifiers: None,
+                attributes: vec![],
             },
             // 0::M::fn()
             FunctionHandle {
@@ -136,6 +144,7 @@ fn mk_invoking_module(use_generic: bool, valid: bool) -> CompiledModule {
                 return_: SignatureIndex(0),
                 type_parameters: vec![],
                 access_specifiers: None,
+                attributes: vec![],
             },
             // 0::M::g_fn<T>()
             FunctionHandle {
@@ -145,6 +154,7 @@ fn mk_invoking_module(use_generic: bool, valid: bool) -> CompiledModule {
                 return_: SignatureIndex(0),
                 type_parameters: vec![AbilitySet::EMPTY],
                 access_specifiers: None,
+                attributes: vec![],
             },
         ],
         // 0::M::g_fn<u64>()
@@ -165,6 +175,9 @@ fn mk_invoking_module(use_generic: bool, valid: bool) -> CompiledModule {
                 }),
             },
         ],
+        struct_variant_handles: vec![],
+        struct_variant_instantiations: vec![],
+        variant_field_handles: vec![],
         signatures: vec![
             Signature(vec![]),                    // void
             Signature(vec![SignatureToken::U64]), // u64
@@ -177,6 +190,7 @@ fn mk_invoking_module(use_generic: bool, valid: bool) -> CompiledModule {
         friend_decls: vec![],
         struct_def_instantiations: vec![],
         field_instantiations: vec![],
+        variant_field_instantiations: vec![],
     };
     move_bytecode_verifier::verify_module(&m).unwrap();
     m
@@ -214,6 +228,7 @@ fn mk_invoking_script(use_generic: bool) -> CompiledScript {
                 return_: SignatureIndex(0),
                 type_parameters: vec![],
                 access_specifiers: None,
+                attributes: vec![],
             },
             // 0::M::g_fn<T>()
             FunctionHandle {
@@ -223,6 +238,7 @@ fn mk_invoking_script(use_generic: bool) -> CompiledScript {
                 return_: SignatureIndex(0),
                 type_parameters: vec![AbilitySet::EMPTY],
                 access_specifiers: None,
+                attributes: vec![],
             },
         ],
         // 0::M::g_fn<u64>()
@@ -232,6 +248,7 @@ fn mk_invoking_script(use_generic: bool) -> CompiledScript {
         }],
         type_parameters: vec![],
         parameters: SignatureIndex(0),
+        access_specifiers: None,
         code: CodeUnit {
             locals: SignatureIndex(0),
             code: vec![call, Bytecode::Ret],

@@ -13,7 +13,10 @@ use crate::{
     CliResult,
 };
 use aptos_build_info::build_information;
-use aptos_crypto::ed25519::{Ed25519PrivateKey, Ed25519PublicKey};
+use aptos_crypto::{
+    ed25519::{Ed25519PrivateKey, Ed25519PublicKey},
+    ValidCryptoMaterial, ValidCryptoMaterialStringExt,
+};
 use aptos_keygen::KeyGen;
 use aptos_logger::{debug, Level};
 use aptos_rest_client::{aptos_api_types::HashValue, Account, Client, FaucetClient, State};
@@ -27,7 +30,7 @@ use aptos_types::{
 use itertools::Itertools;
 use move_core_types::{account_address::AccountAddress, language_storage::CORE_CODE_ADDRESS};
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::{ser::Error, Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
@@ -571,11 +574,11 @@ pub fn explorer_account_link(hash: AccountAddress, network: Option<Network>) -> 
     // For now, default to what the browser is already on, though the link could be wrong
     if let Some(network) = network {
         format!(
-            "https://explorer.movementlabs.xyz/account/{}?network={}",
+            "https://explorer.aptoslabs.com/account/{}?network={}",
             hash, network
         )
     } else {
-        format!("https://explorer.movementlabs.xyz/account/{}", hash)
+        format!("https://explorer.aptoslabs.com/account/{}", hash)
     }
 }
 
@@ -586,11 +589,106 @@ pub fn explorer_transaction_link(
     // For now, default to what the browser is already on, though the link could be wrong
     if let Some(network) = network {
         format!(
-            "https://explorer.movementlabs.xyz/txn/{}?network={}",
+            "https://explorer.aptoslabs.com/txn/{}?network={}",
             hash.to_hex_literal(),
             network
         )
     } else {
-        format!("https://explorer.movementlabs.xyz/txn/{}", hash)
+        format!(
+            "https://explorer.aptoslabs.com/txn/{}",
+            hash.to_hex_literal()
+        )
     }
+}
+
+/// Strips the private key prefix for a given key string if it is AIP-80 compliant.
+///
+/// [Read about AIP-80](https://github.com/aptos-foundation/AIPs/blob/main/aips/aip-80.md)
+pub fn strip_private_key_prefix(key: &String) -> CliTypedResult<String> {
+    let disabled_prefixes = ["secp256k1-priv-"];
+    let enabled_prefixes = ["ed25519-priv-"];
+
+    // Check for disabled prefixes first
+    for prefix in disabled_prefixes {
+        if key.starts_with(prefix) {
+            return Err(CliError::UnexpectedError(format!(
+                "Private key not supported. Cannot parse private key with '{}' prefix.",
+                prefix
+            )));
+        }
+    }
+
+    // Try to strip enabled prefixes
+    for prefix in enabled_prefixes {
+        if key.starts_with(prefix) {
+            return Ok(key.strip_prefix(prefix).unwrap().to_string());
+        }
+    }
+
+    // If no prefix is found, return the original key
+    Ok(key.to_string())
+}
+
+pub fn serialize_address_str<S: Serializer>(
+    addr: &Option<AccountAddress>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if let Some(addr) = addr {
+        serializer.serialize_some(&addr.to_standard_string())
+    } else {
+        serializer.serialize_none()
+    }
+}
+
+pub fn deserialize_address_str<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<AccountAddress>, D::Error> {
+    use serde::de::Error;
+
+    // Deserialize the field as an Option<String>
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+
+    // Transform Option<String> into Option<T>
+    opt.map_or(Ok(None), |s| {
+        AccountAddress::from_str(&s)
+            .map(Some)
+            .map_err(D::Error::custom)
+    })
+}
+
+/// Serializes an [`ValidCryptoMaterial`] with a prefix AIP-80 prefix if present.
+///
+/// [Read about AIP-80](https://github.com/aptos-foundation/AIPs/blob/main/aips/aip-80.md)
+pub fn serialize_material_with_prefix<S: Serializer, T: ValidCryptoMaterial>(
+    material: &Option<T>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if let Some(material) = material {
+        serializer.serialize_some(
+            &material
+                .to_aip_80_string()
+                .map_err(|err| S::Error::custom(err.to_string()))?,
+        )
+    } else {
+        serializer.serialize_none()
+    }
+}
+
+/// Deserializes an [`ValidCryptoMaterial`] with a prefix AIP-80 prefix if present.
+///
+/// [Read about AIP-80](https://github.com/aptos-foundation/AIPs/blob/main/aips/aip-80.md)
+pub fn deserialize_material_with_prefix<'de, D: Deserializer<'de>, T: ValidCryptoMaterial>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    use serde::de::Error;
+
+    // Deserialize the field as an Option<String>
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+
+    // Transform Option<String> into Option<T>
+    opt.map_or(Ok(None), |s| {
+        T::from_encoded_string(&s)
+            .map(Some)
+            .map_err(D::Error::custom)
+    })
 }

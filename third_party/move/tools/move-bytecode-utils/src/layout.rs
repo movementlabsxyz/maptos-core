@@ -2,6 +2,8 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(deprecated)]
+
 use crate::compiled_module_viewer::CompiledModuleView;
 use anyhow::{anyhow, bail};
 use move_binary_format::{
@@ -12,6 +14,7 @@ use move_binary_format::{
 };
 use move_core_types::{
     account_address::AccountAddress,
+    function::MoveFunctionLayout,
     identifier::{IdentStr, Identifier},
     language_storage::{ModuleId, StructTag, TypeTag},
     value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout},
@@ -196,7 +199,8 @@ impl<'a, T: CompiledModuleView> SerdeLayoutBuilder<'a, T> {
                     declaring_module.borrow().name()
                 )
             });
-        let normalized_struct = Struct::new(declaring_module.borrow(), def).1;
+        #[allow(deprecated)]
+        let normalized_struct = Struct::new(declaring_module.borrow(), def)?.1;
         assert_eq!(
             normalized_struct.type_parameters.len(),
             type_arguments.len(),
@@ -371,6 +375,18 @@ impl TypeLayoutBuilder {
                 compiled_module_view,
                 layout_type,
             )?),
+            Function(f) => {
+                let build_list = |ts: &[TypeTag]| {
+                    ts.iter()
+                        .map(|t| Self::build(t, compiled_module_view, layout_type))
+                        .collect::<anyhow::Result<Vec<_>>>()
+                };
+                MoveTypeLayout::Function(MoveFunctionLayout(
+                    build_list(&f.args)?,
+                    build_list(&f.results)?,
+                    f.abilities,
+                ))
+            },
         })
     }
 
@@ -383,6 +399,7 @@ impl TypeLayoutBuilder {
     ) -> anyhow::Result<MoveTypeLayout> {
         use SignatureToken::*;
         Ok(match s {
+            Function(..) => bail!("function types NYI for MoveTypeLayout"),
             Vector(t) => MoveTypeLayout::Vector(Box::new(Self::build_from_signature_token(
                 m,
                 t,
@@ -529,6 +546,9 @@ impl StructLayoutBuilder {
                         MoveStructLayout::WithTypes { type_, fields }
                     },
                 })
+            },
+            StructFieldInformation::DeclaredVariants(..) => {
+                bail!("enum variants not yet supported by layouts")
             },
         }
     }

@@ -24,6 +24,7 @@ pub struct VMConfig {
     pub type_byte_cost: u64,
     pub delayed_field_optimization_enabled: bool,
     pub ty_builder: TypeBuilder,
+    pub use_call_tree_and_instruction_cache: bool,
 }
 
 impl Default for VMConfig {
@@ -38,7 +39,8 @@ impl Default for VMConfig {
             type_base_cost: 0,
             type_byte_cost: 0,
             delayed_field_optimization_enabled: false,
-            ty_builder: TypeBuilder::Legacy,
+            ty_builder: TypeBuilder::with_limits(128, 20),
+            use_call_tree_and_instruction_cache: true,
         }
     }
 }

@@ -15,10 +15,9 @@ use aptos_data_streaming_service::{
     streaming_client::{DataStreamingClient, Epoch, NotificationAndFeedback},
 };
 use aptos_executor_types::{ChunkCommitNotification, ChunkExecutorTrait};
-use aptos_schemadb::DB;
 use aptos_storage_interface::{
-    cached_state_view::ShardedStateCache, state_delta::StateDelta, DbReader, DbReaderWriter,
-    DbWriter, ExecutedTrees, Order, Result, StateSnapshotReceiver,
+    chunk_to_commit::ChunkToCommit, DbReader, DbReaderWriter, DbWriter, LedgerSummary, Order,
+    Result, StateSnapshotReceiver,
 };
 use aptos_types::{
     account_address::AccountAddress,
@@ -35,11 +34,10 @@ use aptos_types::{
     state_store::{
         state_key::StateKey,
         state_value::{StateValue, StateValueChunkWithProof},
-        ShardedStateUpdates,
     },
     transaction::{
         AccountTransactionsWithProof, TransactionListWithProof, TransactionOutputListWithProof,
-        TransactionToCommit, TransactionWithProof, Version,
+        TransactionWithProof, Version,
     },
 };
 use async_trait::async_trait;
@@ -83,7 +81,10 @@ pub fn create_mock_reader_writer_with_version(
     let mut reader = reader.unwrap_or_else(create_mock_db_reader);
     reader
         .expect_get_synced_version()
-        .returning(move || Ok(highest_synced_version));
+        .returning(move || Ok(Some(highest_synced_version)));
+    reader
+        .expect_get_pre_committed_version()
+        .returning(move || Ok(Some(highest_synced_version)));
     reader
         .expect_get_latest_epoch_state()
         .returning(|| Ok(create_empty_epoch_state()));
@@ -236,7 +237,9 @@ mock! {
 
         fn get_latest_ledger_info(&self) -> Result<LedgerInfoWithSignatures>;
 
-        fn get_synced_version(&self) -> Result<Version>;
+        fn get_synced_version(&self) -> Result<Option<Version>>;
+
+        fn get_pre_committed_version(&self) -> Result<Option<Version>>;
 
         fn get_latest_ledger_info_version(&self) -> Result<Version>;
 
@@ -273,7 +276,7 @@ mock! {
             version: Version,
         ) -> Result<(Option<StateValue>, SparseMerkleProof)>;
 
-        fn get_latest_executed_trees(&self) -> Result<ExecutedTrees>;
+        fn get_pre_committed_ledger_summary(&self) -> Result<LedgerSummary>;
 
         fn get_epoch_ending_ledger_info(&self, known_version: u64) -> Result<LedgerInfoWithSignatures>;
 
@@ -290,7 +293,7 @@ mock! {
             ledger_version: Version,
         ) -> Result<TransactionAccumulatorSummary>;
 
-        fn get_state_leaf_count(&self, version: Version) -> Result<usize>;
+        fn get_state_item_count(&self, version: Version) -> Result<usize>;
 
         fn get_state_value_chunk_with_proof(
             &self,
@@ -322,14 +325,9 @@ mock! {
 
         fn save_transactions<'a, 'b>(
             &self,
-            txns_to_commit: &[TransactionToCommit],
-            first_version: Version,
-            base_state_version: Option<Version>,
+            chunk: ChunkToCommit<'b>,
             ledger_info_with_sigs: Option<&'a LedgerInfoWithSignatures>,
             sync_commit: bool,
-            in_memory_state: StateDelta,
-            state_updates_until_last_checkpoint: Option<ShardedStateUpdates>,
-            sharded_state_cache: Option<&'b ShardedStateCache>,
         ) -> Result<()>;
     }
 }
@@ -474,7 +472,6 @@ mock! {
             epoch_change_proofs: Vec<LedgerInfoWithSignatures>,
             target_ledger_info: LedgerInfoWithSignatures,
             target_output_with_proof: TransactionOutputListWithProof,
-            internal_indexer_db: Option<Arc<DB>>,
         ) -> AnyhowResult<JoinHandle<()>, crate::error::Error>;
 
         fn pending_storage_data(&self) -> bool;

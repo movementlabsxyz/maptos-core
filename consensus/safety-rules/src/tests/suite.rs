@@ -596,7 +596,7 @@ fn test_validator_not_in_set(safety_rules: &Callback) {
     next_epoch_state.epoch = 1;
     let rand_signer = ValidatorSigner::random([0xFu8; 32]);
     next_epoch_state.verifier =
-        ValidatorVerifier::new_single(rand_signer.author(), rand_signer.public_key());
+        ValidatorVerifier::new_single(rand_signer.author(), rand_signer.public_key()).into();
     let a2 = test_utils::make_proposal_with_parent_and_overrides(
         Payload::empty(false, true),
         round + 2,
@@ -634,7 +634,7 @@ fn test_key_not_in_store(safety_rules: &Callback) {
     next_epoch_state.epoch = 1;
     let rand_signer = ValidatorSigner::random([0xFu8; 32]);
     next_epoch_state.verifier =
-        ValidatorVerifier::new_single(signer.author(), rand_signer.public_key());
+        ValidatorVerifier::new_single(signer.author(), rand_signer.public_key()).into();
     let a2 = test_utils::make_proposal_with_parent_and_overrides(
         Payload::empty(false, true),
         round + 2,
@@ -822,7 +822,7 @@ fn test_2chain_timeout(constructor: &Callback) {
     ));
 }
 
-/// Test that we can succesfully sign a valid commit vote
+/// Test that we can successfully sign a valid commit vote
 fn test_sign_commit_vote(constructor: &Callback) {
     // we construct a chain of proposals
     // genesis -- a1 -- a2 -- a3

@@ -3,12 +3,12 @@
 
 use crate::{aptos_core_path, components::get_execution_hash};
 use anyhow::Result;
+use aptos_crypto::HashValue;
 use aptos_framework::{BuildOptions, BuiltPackage, ReleasePackage};
 use aptos_temppath::TempPath;
 use aptos_types::account_address::AccountAddress;
 use git2::Repository;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub struct FrameworkReleaseConfig {
@@ -22,70 +22,19 @@ pub struct FrameworkReleaseConfig {
 pub fn generate_upgrade_proposals(
     config: &FrameworkReleaseConfig,
     is_testnet: bool,
-    next_execution_hash: Vec<u8>,
+    next_execution_hash: Option<HashValue>,
+    is_multi_step: bool,
 ) -> Result<Vec<(String, String)>> {
+    assert!(
+        is_multi_step || next_execution_hash.is_none(),
+        "only multi-step proposals can have a next execution hash"
+    );
+
     const APTOS_GIT_PATH: &str = "https://github.com/aptos-labs/aptos-core.git";
-    generate_upgrade_proposals_with_repo(config, is_testnet, next_execution_hash, APTOS_GIT_PATH)
-}
 
-pub fn generate_upgrade_proposals_with_repo(
-    config: &FrameworkReleaseConfig,
-    is_testnet: bool,
-    next_execution_hash: Vec<u8>,
-    repo_str: &str,
-) -> Result<Vec<(String, String)>> {
-    let mut result = vec![];
-
-    let (commit_info, release_packages) = generate_upgrade_proposals_release_packages_with_repo(
-        config,
-        is_testnet,
-        next_execution_hash.clone(),
-        repo_str,
-    )?;
-
-    for (account, release, move_script_path, script_name) in release_packages.into_iter() {
-        // If we're generating a single-step proposal on testnet
-        if is_testnet && next_execution_hash.is_empty() {
-            release.generate_script_proposal_testnet(account, move_script_path.clone())?;
-            // If we're generating a single-step proposal on mainnet
-        } else if next_execution_hash.is_empty() {
-            release.generate_script_proposal(account, move_script_path.clone())?;
-            // If we're generating a multi-step proposal
-        } else {
-            let next_execution_hash_bytes = if result.is_empty() {
-                next_execution_hash.clone()
-            } else {
-                get_execution_hash(&result)
-            };
-            release.generate_script_proposal_multi_step(
-                account,
-                move_script_path.clone(),
-                next_execution_hash_bytes,
-            )?;
-        };
-
-        let mut script = format!(
-            "// Framework commit hash: {}\n// Builder commit hash: {}\n",
-            commit_info,
-            aptos_build_info::get_git_hash()
-        );
-
-        script.push_str(&std::fs::read_to_string(move_script_path.as_path())?);
-
-        result.push((script_name, script));
-    }
-    Ok(result)
-}
-
-pub fn generate_upgrade_proposals_release_packages_with_repo(
-    config: &FrameworkReleaseConfig,
-    is_testnet: bool,
-    next_execution_hash: Vec<u8>,
-    repo_str: &str,
-) -> Result<(
-    String,
-    Vec<(AccountAddress, ReleasePackage, PathBuf, String)>,
-)> {
+    // NOTE: This is skipping 0x7 (aptos-experimental package) which is only meant to be released
+    // to devnet (or local testnet) via the genesis process and never released/upgraded in testnet
+    // or mainnet.
     let mut package_path_list = [
         ("0x1", "aptos-move/framework/move-stdlib"),
         ("0x1", "aptos-move/framework/aptos-stdlib"),
@@ -94,14 +43,14 @@ pub fn generate_upgrade_proposals_release_packages_with_repo(
         ("0x4", "aptos-move/framework/aptos-token-objects"),
     ];
 
-    let mut result = vec![];
+    let mut result: Vec<(String, String)> = vec![];
 
     let temp_root_path = TempPath::new();
     temp_root_path.create_as_dir()?;
 
     let commit_info = if let Some(revision) = &config.git_hash {
         // If a commit hash is set, clone the repo from github and checkout to desired hash to a local temp directory.
-        let repository = Repository::clone(repo_str, temp_root_path.path())?;
+        let repository = Repository::clone(APTOS_GIT_PATH, temp_root_path.path())?;
         let (commit, _) = repository.revparse_ext(revision.as_str())?;
         let commit_info = commit
             .describe(&git2::DescribeOptions::default())?
@@ -115,7 +64,7 @@ pub fn generate_upgrade_proposals_release_packages_with_repo(
     // For generating multi-step proposal files, we need to generate them in the reverse order since
     // we need the hash of the next script.
     // We will reverse the order back when writing the files into a directory.
-    if !next_execution_hash.is_empty() {
+    if is_multi_step {
         package_path_list.reverse();
     }
 
@@ -161,13 +110,37 @@ pub fn generate_upgrade_proposals_release_packages_with_repo(
             ..BuildOptions::default()
         };
         let package = BuiltPackage::build(package_path, options)?;
-        result.push((
-            account,
-            ReleasePackage::new(package)?,
-            move_script_path,
-            script_name,
-        ));
-    }
+        let release = ReleasePackage::new(package)?;
 
-    Ok((commit_info, result))
+        if is_multi_step {
+            // If we're generating a multi-step proposal
+            let next_execution_hash_bytes = if result.is_empty() {
+                next_execution_hash
+            } else {
+                get_execution_hash(&result)
+            };
+            release.generate_script_proposal_multi_step(
+                account,
+                move_script_path.clone(),
+                next_execution_hash_bytes,
+            )?;
+        } else if is_testnet {
+            // If we're generating a single-step proposal on testnet
+            release.generate_script_proposal_testnet(account, move_script_path.clone())?;
+        } else {
+            // If we're generating a single-step proposal on mainnet
+            release.generate_script_proposal(account, move_script_path.clone())?;
+        }
+
+        let mut script = format!(
+            "// Framework commit hash: {}\n// Builder commit hash: {}\n",
+            commit_info,
+            aptos_build_info::get_git_hash()
+        );
+
+        script.push_str(&std::fs::read_to_string(move_script_path.as_path())?);
+
+        result.push((script_name, script));
+    }
+    Ok(result)
 }

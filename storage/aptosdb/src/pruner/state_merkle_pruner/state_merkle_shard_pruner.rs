@@ -13,8 +13,8 @@ use crate::{
 };
 use anyhow::Result;
 use aptos_jellyfish_merkle::StaleNodeIndex;
-use tracing::info;
-use aptos_schemadb::{schema::KeyCodec, SchemaBatch, DB};
+use aptos_logger::info;
+use aptos_schemadb::{batch::SchemaBatch, schema::KeyCodec, DB};
 use aptos_types::transaction::Version;
 use std::{marker::PhantomData, sync::Arc};
 
@@ -61,7 +61,7 @@ where
         target_version: Version,
     ) -> Result<()> {
         loop {
-            let batch = SchemaBatch::new();
+            let mut batch = SchemaBatch::new();
             let (indices, next_version) = StateMerklePruner::get_stale_node_indices(
                 &self.db_shard,
                 current_progress,

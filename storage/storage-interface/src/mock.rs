@@ -27,7 +27,7 @@ impl DbReader for MockDbReaderWriter {
 
     fn get_state_proof_by_version_ext(
         &self,
-        _state_key: &StateKey,
+        _key_hash: &HashValue,
         _version: Version,
         _root_depth: usize,
     ) -> Result<SparseMerkleProofExt> {

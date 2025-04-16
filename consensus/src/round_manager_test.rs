@@ -4,6 +4,7 @@
 
 use crate::{
     block_storage::{pending_blocks::PendingBlocks, BlockReader, BlockStore},
+    counters,
     liveness::{
         proposal_generator::{
             ChainHealthBackoffConfig, PipelineBackpressureConfig, ProposalGenerator,
@@ -16,20 +17,20 @@ use crate::{
     network::{IncomingBlockRetrievalRequest, NetworkSender},
     network_interface::{CommitMessage, ConsensusMsg, ConsensusNetworkClient, DIRECT_SEND, RPC},
     network_tests::{NetworkPlayground, TwinId},
-    payload_manager::PayloadManager,
+    payload_manager::DirectMempoolPayloadManager,
     persistent_liveness_storage::RecoveryData,
     pipeline::buffer_manager::OrderedBlocks,
     round_manager::RoundManager,
     test_utils::{
         consensus_runtime, create_vec_signed_transactions,
-        mock_execution_client::MockExecutionClient, timed_block_on, MockPayloadManager,
-        MockStorage, TreeInserter,
+        mock_execution_client::MockExecutionClient, timed_block_on, MockOptQSPayloadProvider,
+        MockPastProposalStatusTracker, MockPayloadManager, MockStorage, TreeInserter,
     },
     util::time_service::{ClockTimeService, TimeService},
 };
 use aptos_channels::{self, aptos_channel, message_queues::QueueStyle};
 use aptos_config::{
-    config::{ConsensusConfig, QcAggregatorType},
+    config::ConsensusConfig,
     network_id::{NetworkId, PeerNetworkId},
 };
 use aptos_consensus_types::{
@@ -37,12 +38,15 @@ use aptos_consensus_types::{
         block_test_utils::{certificate_for_genesis, gen_test_certificate},
         Block,
     },
-    block_retrieval::{BlockRetrievalRequest, BlockRetrievalStatus},
+    block_retrieval::{BlockRetrievalRequest, BlockRetrievalRequestV1, BlockRetrievalStatus},
     common::{Author, Payload, Round},
+    order_vote_msg::OrderVoteMsg,
     pipeline::commit_decision::CommitDecision,
     proposal_msg::ProposalMsg,
+    round_timeout::RoundTimeoutMsg,
     sync_info::SyncInfo,
     timeout_2chain::{TwoChainTimeout, TwoChainTimeoutWithPartialSignatures},
+    utils::PayloadTxnsSize,
     vote_msg::VoteMsg,
 };
 use aptos_crypto::HashValue;
@@ -68,6 +72,7 @@ use aptos_types::{
     on_chain_config::{
         ConsensusAlgorithmConfig, ConsensusConfigV1, OnChainConsensusConfig,
         OnChainJWKConsensusConfig, OnChainRandomnessConfig, ValidatorTxnConfig,
+        DEFAULT_WINDOW_SIZE,
     },
     transaction::SignedTransaction,
     validator_signer::ValidatorSigner,
@@ -81,9 +86,9 @@ use futures::{
     stream::select,
     FutureExt, Stream, StreamExt,
 };
-use futures_channel::mpsc::unbounded;
 use maplit::hashmap;
 use std::{
+    collections::VecDeque,
     iter::FromIterator,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -115,6 +120,11 @@ pub struct NodeSetup {
     local_consensus_config: ConsensusConfig,
     onchain_randomness_config: OnChainRandomnessConfig,
     onchain_jwk_consensus_config: OnChainJWKConsensusConfig,
+    vote_queue: VecDeque<VoteMsg>,
+    order_vote_queue: VecDeque<OrderVoteMsg>,
+    proposal_queue: VecDeque<ProposalMsg>,
+    round_timeout_queue: VecDeque<RoundTimeoutMsg>,
+    commit_decision_queue: VecDeque<CommitDecision>,
 }
 
 impl NodeSetup {
@@ -122,14 +132,7 @@ impl NodeSetup {
         let base_timeout = Duration::new(60, 0);
         let time_interval = Box::new(ExponentialTimeInterval::fixed(base_timeout));
         let (round_timeout_sender, _) = aptos_channels::new_test(1_024);
-        let (delayed_qc_tx, _) = unbounded();
-        RoundState::new(
-            time_interval,
-            time_service,
-            round_timeout_sender,
-            delayed_qc_tx,
-            QcAggregatorType::NoDelay,
-        )
+        RoundState::new(time_interval, time_service, round_timeout_sender)
     }
 
     fn create_proposer_election(proposers: Vec<Author>) -> Arc<dyn ProposerElection + Send + Sync> {
@@ -149,7 +152,7 @@ impl NodeSetup {
         let mut onchain_consensus_config = onchain_consensus_config.unwrap_or_default();
         // With order votes feature, the validators additionally send order votes.
         // next_proposal and next_vote functions could potentially break because of it.
-        if let OnChainConsensusConfig::V3 {
+        if let OnChainConsensusConfig::V4 {
             alg:
                 ConsensusAlgorithmConfig::JolteonV2 {
                     main: _,
@@ -157,6 +160,7 @@ impl NodeSetup {
                     order_vote_enabled,
                 },
             vtxn: _,
+            window_size: _,
         } = &mut onchain_consensus_config
         {
             *order_vote_enabled = false;
@@ -237,10 +241,7 @@ impl NodeSetup {
         onchain_jwk_consensus_config: OnChainJWKConsensusConfig,
     ) -> Self {
         let _entered_runtime = executor.enter();
-        let epoch_state = Arc::new(EpochState {
-            epoch: 1,
-            verifier: storage.get_validator_set().into(),
-        });
+        let epoch_state = Arc::new(EpochState::new(1, storage.get_validator_set().into()));
         let validators = epoch_state.verifier.clone();
         let (network_reqs_tx, network_reqs_rx) = aptos_channel::new(QueueStyle::FIFO, 8, None);
         let (connection_reqs_tx, _) = aptos_channel::new(QueueStyle::FIFO, 8, None);
@@ -284,6 +285,7 @@ impl NodeSetup {
         ));
         let time_service = Arc::new(ClockTimeService::new(executor));
 
+        let window_size = onchain_consensus_config.window_size();
         let block_store = Arc::new(BlockStore::new(
             storage.clone(),
             initial_data,
@@ -291,9 +293,11 @@ impl NodeSetup {
             10, // max pruned blocks in mem
             time_service.clone(),
             10,
-            Arc::from(PayloadManager::DirectMempool),
+            Arc::from(DirectMempoolPayloadManager::new()),
             false,
+            window_size,
             Arc::new(Mutex::new(PendingBlocks::new())),
+            None,
         ));
 
         let proposer_election = Self::create_proposer_election(proposers.clone());
@@ -303,17 +307,18 @@ impl NodeSetup {
             Arc::new(MockPayloadManager::new(None)),
             time_service.clone(),
             Duration::ZERO,
-            20,
+            PayloadTxnsSize::new(20, 1000),
             10,
-            1000,
-            5,
-            500,
+            PayloadTxnsSize::new(5, 500),
             10,
+            1,
+            Some(30_000),
             PipelineBackpressureConfig::new_no_backoff(),
             ChainHealthBackoffConfig::new_no_backoff(),
             false,
             onchain_consensus_config.effective_validator_txn_config(),
             true,
+            Arc::new(MockOptQSPayloadProvider {}),
         );
 
         let round_state = Self::create_round_state(time_service);
@@ -323,8 +328,7 @@ impl NodeSetup {
 
         let (round_manager_tx, _) = aptos_channel::new(QueueStyle::LIFO, 1, None);
 
-        let mut local_config = local_consensus_config.clone();
-        local_config.enable_broadcast_vote(false);
+        let local_config = local_consensus_config.clone();
 
         let mut round_manager = RoundManager::new(
             epoch_state,
@@ -341,6 +345,7 @@ impl NodeSetup {
             onchain_randomness_config.clone(),
             onchain_jwk_consensus_config.clone(),
             None,
+            Arc::new(MockPastProposalStatusTracker {}),
         );
         block_on(round_manager.init(last_vote_sent));
         Self {
@@ -360,13 +365,21 @@ impl NodeSetup {
             local_consensus_config,
             onchain_randomness_config,
             onchain_jwk_consensus_config,
+            vote_queue: VecDeque::new(),
+            order_vote_queue: VecDeque::new(),
+            proposal_queue: VecDeque::new(),
+            round_timeout_queue: VecDeque::new(),
+            commit_decision_queue: VecDeque::new(),
         }
     }
 
     pub fn restart(self, playground: &mut NetworkPlayground, executor: Handle) -> Self {
         let recover_data = self
             .storage
-            .try_start(self.onchain_consensus_config.order_vote_enabled())
+            .try_start(
+                self.onchain_consensus_config.order_vote_enabled(),
+                self.onchain_consensus_config.window_size(),
+            )
             .unwrap_or_else(|e| panic!("fail to restart due to: {}", e));
         Self::new(
             playground,
@@ -407,8 +420,8 @@ impl NodeSetup {
         }
     }
 
-    pub async fn next_network_message(&mut self) -> ConsensusMsg {
-        match self.next_network_event().await {
+    pub async fn next_network_message(&mut self) {
+        let consensus_msg = match self.next_network_event().await {
             Event::Message(_, msg) => msg,
             Event::RpcRequest(_, msg, _, _) if matches!(msg, ConsensusMsg::CommitMessage(_)) => msg,
             Event::RpcRequest(_, msg, _, _) => {
@@ -418,6 +431,37 @@ impl NodeSetup {
                     self.identity_desc()
                 )
             },
+        };
+
+        match consensus_msg {
+            ConsensusMsg::ProposalMsg(proposal) => {
+                self.proposal_queue.push_back(*proposal);
+            },
+            ConsensusMsg::VoteMsg(vote) => {
+                self.vote_queue.push_back(*vote);
+            },
+            ConsensusMsg::OrderVoteMsg(order_vote) => {
+                self.order_vote_queue.push_back(*order_vote);
+            },
+            ConsensusMsg::RoundTimeoutMsg(round_timeout) => {
+                self.round_timeout_queue.push_back(*round_timeout);
+            },
+            ConsensusMsg::CommitDecisionMsg(commit_decision) => {
+                self.commit_decision_queue.push_back(*commit_decision);
+            },
+            ConsensusMsg::CommitMessage(d) if matches!(*d, CommitMessage::Decision(_)) => {
+                match *d {
+                    CommitMessage::Decision(commit_decision) => {
+                        self.commit_decision_queue.push_back(commit_decision);
+                    },
+                    _ => unreachable!(),
+                }
+            },
+            msg => panic!(
+                "Unexpected Consensus Message: {:?} on node {}",
+                msg,
+                self.identity_desc()
+            ),
         }
     }
 
@@ -433,47 +477,51 @@ impl NodeSetup {
     }
 
     pub async fn next_proposal(&mut self) -> ProposalMsg {
-        match self.next_network_message().await {
-            ConsensusMsg::ProposalMsg(p) => *p,
-            msg => panic!(
-                "Unexpected Consensus Message: {:?} on node {}",
-                msg,
-                self.identity_desc()
-            ),
+        while self.proposal_queue.is_empty() {
+            self.next_network_message().await;
         }
+        self.proposal_queue.pop_front().unwrap()
     }
 
     pub async fn next_vote(&mut self) -> VoteMsg {
-        match self.next_network_message().await {
-            ConsensusMsg::VoteMsg(v) => *v,
-            msg => panic!(
-                "Unexpected Consensus Message: {:?} on node {}",
-                msg,
-                self.identity_desc()
-            ),
+        while self.vote_queue.is_empty() {
+            self.next_network_message().await;
         }
+        self.vote_queue.pop_front().unwrap()
+    }
+
+    #[allow(unused)]
+    pub async fn next_order_vote(&mut self) -> OrderVoteMsg {
+        while self.order_vote_queue.is_empty() {
+            self.next_network_message().await;
+        }
+        self.order_vote_queue.pop_front().unwrap()
+    }
+
+    pub async fn next_timeout(&mut self) -> RoundTimeoutMsg {
+        while self.round_timeout_queue.is_empty() {
+            self.next_network_message().await;
+        }
+        self.round_timeout_queue.pop_front().unwrap()
     }
 
     pub async fn next_commit_decision(&mut self) -> CommitDecision {
-        match self.next_network_message().await {
-            ConsensusMsg::CommitDecisionMsg(v) => *v,
-            ConsensusMsg::CommitMessage(d) if matches!(*d, CommitMessage::Decision(_)) => {
-                match *d {
-                    CommitMessage::Decision(d) => d,
-                    _ => unreachable!(),
-                }
-            },
-            msg => panic!(
-                "Unexpected Consensus Message: {:?} on node {}",
-                msg,
-                self.identity_desc()
-            ),
+        while self.commit_decision_queue.is_empty() {
+            self.next_network_message().await;
         }
+        self.commit_decision_queue.pop_front().unwrap()
     }
 
-    pub async fn poll_block_retreival(&mut self) -> Option<IncomingBlockRetrievalRequest> {
+    pub async fn poll_block_retrieval(&mut self) -> Option<IncomingBlockRetrievalRequest> {
         match self.poll_next_network_event() {
             Some(Event::RpcRequest(_, msg, protocol, response_sender)) => match msg {
+                ConsensusMsg::DeprecatedBlockRetrievalRequest(v) => {
+                    Some(IncomingBlockRetrievalRequest {
+                        req: BlockRetrievalRequest::V1(*v),
+                        protocol,
+                        response_sender,
+                    })
+                },
                 ConsensusMsg::BlockRetrievalRequest(v) => Some(IncomingBlockRetrievalRequest {
                     req: *v,
                     protocol,
@@ -520,6 +568,14 @@ impl NodeSetup {
     }
 }
 
+fn config_with_round_timeout_msg_disabled() -> ConsensusConfig {
+    // Disable RoundTimeoutMsg to unless expliclity enabled.
+    ConsensusConfig {
+        enable_round_timeout_msg: false,
+        ..Default::default()
+    }
+}
+
 fn start_replying_to_block_retreival(nodes: Vec<NodeSetup>) -> ReplyingRPCHandle {
     let done = Arc::new(AtomicBool::new(false));
     let mut handles = Vec::new();
@@ -528,15 +584,20 @@ fn start_replying_to_block_retreival(nodes: Vec<NodeSetup>) -> ReplyingRPCHandle
         handles.push(tokio::spawn(async move {
             while !done_clone.load(Ordering::Relaxed) {
                 info!("Asking for RPC request on {:?}", node.identity_desc());
-                let maybe_request = node.poll_block_retreival().await;
+                let maybe_request = node.poll_block_retrieval().await;
                 if let Some(request) = maybe_request {
                     info!(
                         "RPC request received: {:?} on {:?}",
                         request,
                         node.identity_desc()
                     );
+                    let wrapped_request = IncomingBlockRetrievalRequest {
+                        req: request.req,
+                        protocol: request.protocol,
+                        response_sender: request.response_sender,
+                    };
                     node.block_store
-                        .process_block_retrieval(request)
+                        .process_block_retrieval(wrapped_request)
                         .await
                         .unwrap();
                 } else {
@@ -615,51 +676,45 @@ fn process_and_vote_on_proposal(
             .unwrap();
             info!("Finish process proposal on {}", node.identity_desc());
             num_votes += 1;
+        }
+    }
 
-            if let Some(prev_proposer) = apply_commit_prev_proposer {
-                if prev_proposer != node.id && expected_round > 2 {
+    for node in nodes.iter_mut() {
+        info!(
+            "Fetching {} votes in round {} on node {}",
+            num_votes,
+            expected_round,
+            node.identity_desc()
+        );
+        if down_nodes.contains(&node.id) {
+            // Drop the votes on down nodes
+            info!("Dropping votes on down node {}", node.identity_desc());
+            for _ in 0..num_votes {
+                timed_block_on(runtime, node.next_vote());
+            }
+        } else {
+            let mut votes = Vec::new();
+            for _ in 0..num_votes {
+                votes.push(timed_block_on(runtime, node.next_vote()));
+            }
+
+            info!("Processing votes on node {}", node.identity_desc());
+            if process_votes {
+                for vote_msg in votes {
+                    timed_block_on(runtime, node.round_manager.process_vote_msg(vote_msg)).unwrap();
+                }
+                if apply_commit_prev_proposer.is_some()
+                    && expected_round > 1
+                    && apply_commit_on_votes
+                {
                     info!(
-                        "Applying commit {} on node {}",
+                        "Applying next commit {} on proposer node {}",
                         expected_round - 2,
                         node.identity_desc()
                     );
-                    timed_block_on(runtime, node.commit_next_ordered(&[expected_round - 2]));
+                    timed_block_on(runtime, node.commit_next_ordered(&[expected_round - 1]));
                 }
             }
-        }
-    }
-
-    let proposer_node = nodes.get_mut(next_proposer).unwrap();
-    info!(
-        "Fetching {} votes in round {} on node {}",
-        num_votes,
-        expected_round,
-        proposer_node.identity_desc()
-    );
-    let mut votes = Vec::new();
-    for _ in 0..num_votes {
-        votes.push(timed_block_on(runtime, proposer_node.next_vote()));
-    }
-
-    info!("Processing votes on node {}", proposer_node.identity_desc());
-    if process_votes {
-        for vote_msg in votes {
-            timed_block_on(
-                runtime,
-                proposer_node.round_manager.process_vote_msg(vote_msg),
-            )
-            .unwrap();
-        }
-        if apply_commit_prev_proposer.is_some() && expected_round > 1 && apply_commit_on_votes {
-            info!(
-                "Applying next commit {} on proposer node {}",
-                expected_round - 2,
-                proposer_node.identity_desc()
-            );
-            timed_block_on(
-                runtime,
-                proposer_node.commit_next_ordered(&[expected_round - 1]),
-            );
         }
     }
 }
@@ -960,7 +1015,7 @@ fn sync_info_carried_on_timeout_vote() {
         1,
         None,
         None,
-        None,
+        Some(config_with_round_timeout_msg_disabled()),
         None,
         None,
     );
@@ -991,13 +1046,14 @@ fn sync_info_carried_on_timeout_vote() {
             .insert_single_quorum_cert(block_0_quorum_cert.clone())
             .unwrap();
 
-        node.round_manager
-            .round_state
-            .process_certificates(SyncInfo::new(
+        node.round_manager.round_state.process_certificates(
+            SyncInfo::new(
                 block_0_quorum_cert.clone(),
                 block_0_quorum_cert.into_wrapped_ledger_info(),
                 None,
-            ));
+            ),
+            &generate_validator_verifier(&[node.signer.clone()]),
+        );
         node.round_manager
             .process_local_timeout(2)
             .await
@@ -1147,11 +1203,13 @@ fn new_round_on_timeout_certificate() {
                 None,
             ),
         );
+        let before = counters::ERROR_COUNT.get();
         assert!(node
             .round_manager
             .process_proposal_msg(old_good_proposal)
             .await
-            .is_err());
+            .is_ok()); // we eat the error
+        assert_eq!(counters::ERROR_COUNT.get(), before + 1); // but increase the counter
     });
 }
 
@@ -1300,7 +1358,7 @@ fn response_on_block_retrieval() {
         // first verify that we can retrieve the block if it's in the tree
         let (tx1, rx1) = oneshot::channel();
         let single_block_request = IncomingBlockRetrievalRequest {
-            req: BlockRetrievalRequest::new(block_id, 1),
+            req: BlockRetrievalRequest::V1(BlockRetrievalRequestV1::new(block_id, 1)),
             protocol: ProtocolId::ConsensusRpcBcs,
             response_sender: tx1,
         };
@@ -1323,7 +1381,7 @@ fn response_on_block_retrieval() {
         // verify that if a block is not there, return ID_NOT_FOUND
         let (tx2, rx2) = oneshot::channel();
         let missing_block_request = IncomingBlockRetrievalRequest {
-            req: BlockRetrievalRequest::new(HashValue::random(), 1),
+            req: BlockRetrievalRequest::V1(BlockRetrievalRequestV1::new(HashValue::random(), 1)),
             protocol: ProtocolId::ConsensusRpcBcs,
             response_sender: tx2,
         };
@@ -1347,7 +1405,7 @@ fn response_on_block_retrieval() {
         // if asked for many blocks, return NOT_ENOUGH_BLOCKS
         let (tx3, rx3) = oneshot::channel();
         let many_block_request = IncomingBlockRetrievalRequest {
-            req: BlockRetrievalRequest::new(block_id, 3),
+            req: BlockRetrievalRequest::V1(BlockRetrievalRequestV1::new(block_id, 3)),
             protocol: ProtocolId::ConsensusRpcBcs,
             response_sender: tx3,
         };
@@ -1461,7 +1519,7 @@ fn nil_vote_on_timeout() {
         1,
         None,
         None,
-        None,
+        Some(config_with_round_timeout_msg_disabled()),
         None,
         None,
     );
@@ -1494,6 +1552,46 @@ fn nil_vote_on_timeout() {
 }
 
 #[test]
+/// Generate a Timeout upon timeout if no votes have been sent in the round.
+fn timeout_round_on_timeout() {
+    let runtime = consensus_runtime();
+    let mut playground = NetworkPlayground::new(runtime.handle().clone());
+    let local_config = ConsensusConfig {
+        enable_round_timeout_msg: true,
+        ..Default::default()
+    };
+    let mut nodes = NodeSetup::create_nodes(
+        &mut playground,
+        runtime.handle().clone(),
+        1,
+        None,
+        None,
+        Some(local_config),
+        None,
+        None,
+    );
+    let node = &mut nodes[0];
+    let genesis = node.block_store.ordered_root();
+    timed_block_on(&runtime, async {
+        node.next_proposal().await;
+        // Process the outgoing vote message and verify that it contains a round signature
+        // and that the vote extends genesis.
+        node.round_manager
+            .process_local_timeout(1)
+            .await
+            .unwrap_err();
+        let timeout_msg = node.next_timeout().await;
+
+        let timeout = timeout_msg.timeout();
+
+        assert_eq!(timeout.round(), 1);
+        assert_eq!(timeout.author(), node.signer.author());
+        assert_eq!(timeout.epoch(), 1);
+        assert_eq!(timeout.two_chain_timeout().hqc_round(), genesis.round());
+    });
+}
+
+#[test]
 /// If the node votes in a round, upon timeout the same vote is re-sent with a timeout signature.
 fn vote_resent_on_timeout() {
     let runtime = consensus_runtime();
@@ -1504,7 +1602,7 @@ fn vote_resent_on_timeout() {
         1,
         None,
         None,
-        None,
+        Some(config_with_round_timeout_msg_disabled()),
         None,
         None,
     );
@@ -1531,6 +1629,50 @@ fn vote_resent_on_timeout() {
 
         assert!(timeout_vote.is_timeout());
         assert_eq!(timeout_vote.vote_data(), vote.vote_data());
+    });
+}
+
+#[test]
+/// If the node votes in a round, upon timeout the same vote is re-sent with a timeout signature.
+fn timeout_sent_on_timeout_after_vote() {
+    let runtime = consensus_runtime();
+    let mut playground = NetworkPlayground::new(runtime.handle().clone());
+    let local_config = ConsensusConfig {
+        enable_round_timeout_msg: true,
+        ..Default::default()
+    };
+    let mut nodes = NodeSetup::create_nodes(
+        &mut playground,
+        runtime.handle().clone(),
+        1,
+        None,
+        None,
+        Some(local_config),
+        None,
+        None,
+    );
+    let node = &mut nodes[0];
+    timed_block_on(&runtime, async {
+        let proposal_msg = node.next_proposal().await;
+        let id = proposal_msg.proposal().id();
+        node.round_manager
+            .process_proposal_msg(proposal_msg)
+            .await
+            .unwrap();
+        let vote_msg = node.next_vote().await;
+        let vote = vote_msg.vote();
+        assert!(!vote.is_timeout());
+        assert_eq!(vote.vote_data().proposed().id(), id);
+        // Process the outgoing vote message and verify that it contains a round signature
+        // and that the vote is the same as above.
+        node.round_manager
+            .process_local_timeout(1)
+            .await
+            .unwrap_err();
+        let timeout_msg = node.next_timeout().await;
+
+        assert_eq!(timeout_msg.round(), vote.vote_data().proposed().round());
+        assert_eq!(timeout_msg.sync_info(), vote_msg.sync_info());
     });
 }
 
@@ -1610,7 +1752,7 @@ fn safety_rules_crash() {
         1,
         None,
         None,
-        None,
+        Some(config_with_round_timeout_msg_disabled()),
         None,
         None,
     );
@@ -1675,7 +1817,7 @@ fn echo_timeout() {
         4,
         None,
         None,
-        None,
+        Some(config_with_round_timeout_msg_disabled()),
         None,
         None,
     );
@@ -1711,9 +1853,69 @@ fn echo_timeout() {
         // it receives 4 timeout messages (1 from each) and doesn't echo since it already timeout
         for _ in 0..4 {
             let timeout_vote = node_1.next_vote().await;
+            // Verifying only some vote messages to check that round manager can accept both
+            // verified and unverified votes
             node_1
                 .round_manager
                 .process_vote_msg(timeout_vote)
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[test]
+fn echo_round_timeout_msg() {
+    let runtime = consensus_runtime();
+    let mut playground = NetworkPlayground::new(runtime.handle().clone());
+    let mut nodes = NodeSetup::create_nodes(
+        &mut playground,
+        runtime.handle().clone(),
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    runtime.spawn(playground.start());
+    timed_block_on(&runtime, async {
+        // clear the message queue
+        for node in &mut nodes {
+            node.next_proposal().await;
+        }
+        // timeout 3 nodes
+        for node in &mut nodes[1..] {
+            node.round_manager
+                .process_local_timeout(1)
+                .await
+                .unwrap_err();
+        }
+        let node_0 = &mut nodes[0];
+        // node 0 doesn't timeout and should echo the timeout after 2 timeout message
+        for i in 0..3 {
+            let timeout_vote = node_0.next_timeout().await;
+            let result = node_0
+                .round_manager
+                .process_round_timeout_msg(timeout_vote)
+                .await;
+            // first and third message should not timeout
+            if i == 0 || i == 2 {
+                assert!(result.is_ok());
+            }
+            if i == 1 {
+                // timeout is an Error
+                assert!(result.is_err());
+            }
+        }
+
+        let node_1 = &mut nodes[1];
+        // it receives 4 timeout messages (1 from each) and doesn't echo since it already timeout
+        for _ in 0..4 {
+            let timeout_vote = node_1.next_timeout().await;
+            node_1
+                .round_manager
+                .process_round_timeout_msg(timeout_vote)
                 .await
                 .unwrap();
         }
@@ -1854,6 +2056,74 @@ fn block_retrieval_test() {
     });
 }
 
+#[test]
+fn block_retrieval_timeout_test() {
+    let runtime = consensus_runtime();
+    let mut playground = NetworkPlayground::new(runtime.handle().clone());
+    let mut nodes = NodeSetup::create_nodes(
+        &mut playground,
+        runtime.handle().clone(),
+        4,
+        Some(vec![0, 1]),
+        None,
+        None,
+        None,
+        None,
+    );
+    let timeout_config = playground.timeout_config();
+    runtime.spawn(playground.start());
+
+    for i in 0..4 {
+        info!("processing {}", i);
+        process_and_vote_on_proposal(
+            &runtime,
+            &mut nodes,
+            i as usize % 2,
+            &[3],
+            true,
+            None,
+            true,
+            i + 1,
+            i.saturating_sub(1),
+            0,
+        );
+    }
+
+    timed_block_on(&runtime, async {
+        let mut behind_node = nodes.pop().unwrap();
+
+        for node in nodes.iter() {
+            timeout_config.write().timeout_message_for(
+                &TwinId {
+                    id: behind_node.id,
+                    author: behind_node.signer.author(),
+                },
+                &TwinId {
+                    id: node.id,
+                    author: node.signer.author(),
+                },
+            );
+        }
+
+        // Drain the queue on other nodes
+        for node in nodes.iter_mut() {
+            let _ = node.next_proposal().await;
+        }
+
+        info!(
+            "Processing proposals for behind node {}",
+            behind_node.identity_desc()
+        );
+
+        let proposal_msg = behind_node.next_proposal().await;
+        behind_node
+            .round_manager
+            .process_proposal_msg(proposal_msg)
+            .await
+            .unwrap_err();
+    });
+}
+
 #[ignore] // TODO: turn this test back on once the flakes have resolved.
 #[test]
 pub fn forking_retrieval_test() {
@@ -1942,7 +2212,7 @@ pub fn forking_retrieval_test() {
     );
 
     timed_block_on(&runtime, async {
-        println!("Insert local timeout to all nodes on next round");
+        info!("Insert local timeout to all nodes on next round");
         let mut timeout_votes = 0;
         for node in nodes.iter_mut() {
             if node.id != behind_node && node.id != forking_node {
@@ -1954,13 +2224,13 @@ pub fn forking_retrieval_test() {
             }
         }
 
-        println!("Process all local timeouts");
+        info!("Process all local timeouts");
         for node in nodes.iter_mut() {
-            println!("Timeouts on {}", node.id);
+            info!("Timeouts on {}", node.id);
             for i in 0..timeout_votes {
-                println!("Timeout {} on {}", i, node.id);
+                info!("Timeout {} on {}", i, node.id);
                 if node.id == forking_node && (2..4).contains(&i) {
-                    println!("Got {}", node.next_commit_decision().await);
+                    info!("Got {}", node.next_commit_decision().await);
                 }
 
                 let vote_msg_on_timeout = node.next_vote().await;
@@ -1987,7 +2257,7 @@ pub fn forking_retrieval_test() {
             assert!(vote_msg_on_timeout.vote().is_timeout());
         }
 
-        println!("Got {}", nodes[forking_node].next_commit_decision().await);
+        info!("Got {}", nodes[forking_node].next_commit_decision().await);
     });
 
     info!("Create forked block");
@@ -2039,7 +2309,7 @@ pub fn forking_retrieval_test() {
             proposals.push(node.next_proposal().await);
         }
 
-        println!(
+        info!(
             "Processing proposals for behind node {}",
             behind_node_obj.identity_desc()
         );
@@ -2083,19 +2353,19 @@ pub fn forking_retrieval_test() {
         3,
     );
 
-    let next_message = timed_block_on(&runtime, nodes[proposal_node].next_network_message());
-    match next_message {
-        ConsensusMsg::VoteMsg(_) => info!("Skip extra vote msg"),
-        ConsensusMsg::ProposalMsg(msg) => {
-            // put the message back in the queue.
-            // actual peer doesn't matter, it is ignored, so use self.
-            let peer = nodes[proposal_node].signer.author();
-            nodes[proposal_node]
-                .pending_network_events
-                .push(Event::Message(peer, ConsensusMsg::ProposalMsg(msg)))
-        },
-        _ => panic!("unexpected network message {:?}", next_message),
-    }
+    // let next_message = timed_block_on(&runtime, nodes[proposal_node].next_network_message());
+    // match next_message {
+    //     ConsensusMsg::VoteMsg(_) => info!("Skip extra vote msg"),
+    //     ConsensusMsg::ProposalMsg(msg) => {
+    //         // put the message back in the queue.
+    //         // actual peer doesn't matter, it is ignored, so use self.
+    //         let peer = nodes[proposal_node].signer.author();
+    //         nodes[proposal_node]
+    //             .pending_network_events
+    //             .push(Event::Message(peer, ConsensusMsg::ProposalMsg(msg)))
+    //     },
+    //     _ => panic!("unexpected network message {:?}", next_message),
+    // }
     process_and_vote_on_proposal(
         &runtime,
         &mut nodes,
@@ -2268,9 +2538,10 @@ fn no_vote_on_proposal_ext_when_receiving_limit_exceeded() {
         runtime.handle().clone(),
         1,
         None,
-        Some(OnChainConsensusConfig::V3 {
+        Some(OnChainConsensusConfig::V4 {
             alg: alg_config,
             vtxn: vtxn_config,
+            window_size: DEFAULT_WINDOW_SIZE,
         }),
         Some(local_config),
         Some(randomness_config),

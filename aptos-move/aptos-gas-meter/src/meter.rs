@@ -101,6 +101,13 @@ where
             MutBorrowField => MUT_BORROW_FIELD,
             ImmBorrowFieldGeneric => IMM_BORROW_FIELD_GENERIC,
             MutBorrowFieldGeneric => MUT_BORROW_FIELD_GENERIC,
+            ImmBorrowVariantField => IMM_BORROW_VARIANT_FIELD,
+            MutBorrowVariantField => MUT_BORROW_VARIANT_FIELD,
+            ImmBorrowVariantFieldGeneric => IMM_BORROW_VARIANT_FIELD_GENERIC,
+            MutBorrowVariantFieldGeneric => MUT_BORROW_VARIANT_FIELD_GENERIC,
+            TestVariant => TEST_VARIANT,
+            TestVariantGeneric => TEST_VARIANT_GENERIC,
+
             FreezeRef => FREEZE_REF,
 
             CastU8 => CAST_U8,
@@ -495,6 +502,11 @@ where
                 .charge_execution(DEPENDENCY_PER_MODULE + DEPENDENCY_PER_BYTE * size)?;
             self.algebra.count_dependency(size)?;
         }
+        Ok(())
+    }
+
+    #[inline]
+    fn charge_heap_memory(&mut self, _amount: u64) -> PartialVMResult<()> {
         Ok(())
     }
 }

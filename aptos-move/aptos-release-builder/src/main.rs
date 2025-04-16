@@ -1,13 +1,14 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use aptos_crypto::{ed25519::Ed25519PrivateKey, ValidCryptoMaterialStringExt};
 use aptos_framework::natives::code::PackageRegistry;
 use aptos_gas_schedule::LATEST_GAS_FEATURE_VERSION;
 use aptos_release_builder::{
     components::fetch_config,
     initialize_aptos_core_path,
+    simulate::simulate_all_proposals,
     validate::{DEFAULT_RESOLUTION_TIME, FAST_RESOLUTION_TIME},
 };
 use aptos_types::{
@@ -17,6 +18,7 @@ use aptos_types::{
 };
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, str::FromStr};
+use url::Url;
 
 #[derive(Parser)]
 pub struct Argument {
@@ -26,14 +28,82 @@ pub struct Argument {
     aptos_core_path: Option<PathBuf>,
 }
 
+// TODO(vgao1996): unify with `ReplayNetworkSelection` in the `aptos` crate.
+#[derive(Clone, Debug)]
+pub enum NetworkSelection {
+    Mainnet,
+    Testnet,
+    Devnet,
+    RestEndpoint(String),
+}
+
+impl FromStr for NetworkSelection {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, anyhow::Error> {
+        Ok(match s {
+            "mainnet" => Self::Mainnet,
+            "testnet" => Self::Testnet,
+            "devnet" => Self::Devnet,
+            _ => Self::RestEndpoint(s.to_owned()),
+        })
+    }
+}
+
+impl NetworkSelection {
+    fn to_url(&self) -> anyhow::Result<Url> {
+        use NetworkSelection::*;
+
+        let s = match &self {
+            Mainnet => "https://fullnode.mainnet.aptoslabs.com",
+            Testnet => "https://fullnode.testnet.aptoslabs.com",
+            Devnet => "https://fullnode.devnet.aptoslabs.com",
+            RestEndpoint(url) => url,
+        };
+
+        Ok(Url::parse(s)?)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Generate sets of governance proposals based on the release_config file passed in
     GenerateProposals {
+        /// Path to the release config.
         #[clap(short, long)]
         release_config: PathBuf,
+
+        /// Output directory to store the generated artifacts.
         #[clap(short, long)]
         output_dir: PathBuf,
+
+        /// If set, simulate the governance proposals after generation.
+        #[clap(long)]
+        simulate: Option<NetworkSelection>,
+
+        /// Set this flag to enable the gas profiler.
+        /// Can only be used in combination with `--simulate`.
+        #[clap(long)]
+        profile_gas: Option<bool>,
+    },
+    /// Simulate a multi-step proposal on the specified network, using its current states.
+    /// The simulation will execute the governance scripts, as if the proposal is already
+    /// approved.
+    Simulate {
+        /// Directory that may contain one or more proposals at any level
+        /// within its sub-directory hierarchy.
+        #[clap(short, long)]
+        path: PathBuf,
+
+        /// The network to simulate on.
+        ///
+        /// Possible values: devnet, testnet, mainnet, <url to rest endpoint>
+        #[clap(long)]
+        network: NetworkSelection,
+
+        /// Set this flag to enable the gas profiler
+        #[clap(long, default_value_t = false)]
+        profile_gas: bool,
     },
     /// Generate sets of governance proposals with default release config.
     WriteDefault {
@@ -126,12 +196,37 @@ async fn main() -> anyhow::Result<()> {
         Commands::GenerateProposals {
             release_config,
             output_dir,
+            simulate,
+            profile_gas,
         } => {
             aptos_release_builder::ReleaseConfig::load_config(release_config.as_path())
                 .with_context(|| "Failed to load release config".to_string())?
                 .generate_release_proposal_scripts(output_dir.as_path())
                 .await
                 .with_context(|| "Failed to generate release proposal scripts".to_string())?;
+
+            match simulate {
+                Some(network) => {
+                    let profile_gas = profile_gas.unwrap_or(false);
+                    let remote_endpoint = network.to_url()?;
+                    simulate_all_proposals(remote_endpoint, output_dir.as_path(), profile_gas)
+                        .await?;
+                },
+                None => {
+                    if profile_gas.is_some() {
+                        bail!("--profile-gas can only be set in combination with --simulate")
+                    }
+                },
+            }
+
+            Ok(())
+        },
+        Commands::Simulate {
+            network,
+            path,
+            profile_gas,
+        } => {
+            simulate_all_proposals(network.to_url()?, &path, profile_gas).await?;
             Ok(())
         },
         Commands::WriteDefault { output_path } => {

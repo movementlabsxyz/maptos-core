@@ -26,6 +26,7 @@ pub(super) fn ledger_db_column_families() -> Vec<ColumnFamilyName> {
         STATE_VALUE_CF_NAME,
         TRANSACTION_CF_NAME,
         TRANSACTION_ACCUMULATOR_CF_NAME,
+        TRANSACTION_ACCUMULATOR_HASH_CF_NAME,
         TRANSACTION_AUXILIARY_DATA_CF_NAME,
         TRANSACTION_BY_ACCOUNT_CF_NAME,
         TRANSACTION_BY_HASH_CF_NAME,
@@ -52,6 +53,7 @@ pub(super) fn transaction_accumulator_db_column_families() -> Vec<ColumnFamilyNa
         /* empty cf */ DEFAULT_COLUMN_FAMILY_NAME,
         DB_METADATA_CF_NAME,
         TRANSACTION_ACCUMULATOR_CF_NAME,
+        TRANSACTION_ACCUMULATOR_HASH_CF_NAME,
     ]
 }
 
@@ -219,15 +221,10 @@ pub(super) fn gen_state_merkle_cfds(rocksdb_config: &RocksdbConfig) -> Vec<Colum
     gen_cfds(rocksdb_config, cfs, |_, _| {})
 }
 
-pub(super) fn gen_state_kv_cfds(
+pub(super) fn gen_state_kv_shard_cfds(
     rocksdb_config: &RocksdbConfig,
-    enable_sharding: bool,
 ) -> Vec<ColumnFamilyDescriptor> {
-    let cfs = if enable_sharding {
-        state_kv_db_new_key_column_families()
-    } else {
-        state_kv_db_column_families()
-    };
+    let cfs = state_kv_db_new_key_column_families();
     gen_cfds(rocksdb_config, cfs, with_state_key_extractor_processor)
 }
 

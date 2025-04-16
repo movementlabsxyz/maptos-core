@@ -933,6 +933,454 @@ paths:
                 type: integer
                 format: uint64
       operationId: get_account_resources
+  /accounts/{address}/balance/{asset_type}:
+    get:
+      tags:
+      - Accounts
+      summary: Get account balance
+      description: |-
+        Retrieves account balance for coins / fungible asset (only for primary fungible asset store)
+        for a given account, asset type and a specific ledger version.  If the
+        ledger version is not specified in the request, the latest ledger version is used.
+
+        The Aptos nodes prune account state history, via a configurable time window.
+        If the requested ledger version has been pruned, the server responds with a 410.
+      parameters:
+      - name: address
+        schema:
+          $ref: '#/components/schemas/Address'
+        in: path
+        description: Address of account with or without a `0x` prefix
+        required: true
+        deprecated: false
+        explode: true
+      - name: asset_type
+        schema:
+          $ref: '#/components/schemas/AssetType'
+        in: path
+        required: true
+        deprecated: false
+        explode: true
+      - name: ledger_version
+        schema:
+          $ref: '#/components/schemas/U64'
+        in: query
+        description: |-
+          Ledger version to get state of account
+
+          If not provided, it will be the latest version
+        required: false
+        deprecated: false
+        explode: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: integer
+                format: uint64
+            application/x-bcs:
+              schema:
+                type: array
+                items:
+                  type: integer
+                  format: uint8
+          headers:
+            X-APTOS-CHAIN-ID:
+              description: Chain ID of the current chain
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint8
+            X-APTOS-LEDGER-VERSION:
+              description: Current ledger version of the chain
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-OLDEST-VERSION:
+              description: Oldest non-pruned ledger version of the chain
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-TIMESTAMPUSEC:
+              description: Current timestamp of the chain
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-EPOCH:
+              description: Current epoch of the chain
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-BLOCK-HEIGHT:
+              description: Current block height of the chain
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-OLDEST-BLOCK-HEIGHT:
+              description: Oldest non-pruned block height of the chain
+              required: true
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-GAS-USED:
+              description: The cost of the call in terms of gas
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-CURSOR:
+              description: |-
+                Cursor to be used for endpoints that support cursor-based
+                pagination. Pass this to the `start` field of the endpoint
+                on the next call to get the next page of results.
+              deprecated: false
+              schema:
+                type: string
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AptosError'
+          headers:
+            X-APTOS-CHAIN-ID:
+              description: Chain ID of the current chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint8
+            X-APTOS-LEDGER-VERSION:
+              description: Current ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-OLDEST-VERSION:
+              description: Oldest non-pruned ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-TIMESTAMPUSEC:
+              description: Current timestamp of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-EPOCH:
+              description: Current epoch of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-BLOCK-HEIGHT:
+              description: Current block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-OLDEST-BLOCK-HEIGHT:
+              description: Oldest non-pruned block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-GAS-USED:
+              description: The cost of the call in terms of gas
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AptosError'
+          headers:
+            X-APTOS-CHAIN-ID:
+              description: Chain ID of the current chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint8
+            X-APTOS-LEDGER-VERSION:
+              description: Current ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-OLDEST-VERSION:
+              description: Oldest non-pruned ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-TIMESTAMPUSEC:
+              description: Current timestamp of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-EPOCH:
+              description: Current epoch of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-BLOCK-HEIGHT:
+              description: Current block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-OLDEST-BLOCK-HEIGHT:
+              description: Oldest non-pruned block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-GAS-USED:
+              description: The cost of the call in terms of gas
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AptosError'
+          headers:
+            X-APTOS-CHAIN-ID:
+              description: Chain ID of the current chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint8
+            X-APTOS-LEDGER-VERSION:
+              description: Current ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-OLDEST-VERSION:
+              description: Oldest non-pruned ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-TIMESTAMPUSEC:
+              description: Current timestamp of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-EPOCH:
+              description: Current epoch of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-BLOCK-HEIGHT:
+              description: Current block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-OLDEST-BLOCK-HEIGHT:
+              description: Oldest non-pruned block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-GAS-USED:
+              description: The cost of the call in terms of gas
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+        '410':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AptosError'
+          headers:
+            X-APTOS-CHAIN-ID:
+              description: Chain ID of the current chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint8
+            X-APTOS-LEDGER-VERSION:
+              description: Current ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-OLDEST-VERSION:
+              description: Oldest non-pruned ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-TIMESTAMPUSEC:
+              description: Current timestamp of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-EPOCH:
+              description: Current epoch of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-BLOCK-HEIGHT:
+              description: Current block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-OLDEST-BLOCK-HEIGHT:
+              description: Oldest non-pruned block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-GAS-USED:
+              description: The cost of the call in terms of gas
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+        '500':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AptosError'
+          headers:
+            X-APTOS-CHAIN-ID:
+              description: Chain ID of the current chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint8
+            X-APTOS-LEDGER-VERSION:
+              description: Current ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-OLDEST-VERSION:
+              description: Oldest non-pruned ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-TIMESTAMPUSEC:
+              description: Current timestamp of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-EPOCH:
+              description: Current epoch of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-BLOCK-HEIGHT:
+              description: Current block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-OLDEST-BLOCK-HEIGHT:
+              description: Oldest non-pruned block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-GAS-USED:
+              description: The cost of the call in terms of gas
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+        '503':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AptosError'
+          headers:
+            X-APTOS-CHAIN-ID:
+              description: Chain ID of the current chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint8
+            X-APTOS-LEDGER-VERSION:
+              description: Current ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-OLDEST-VERSION:
+              description: Oldest non-pruned ledger version of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-LEDGER-TIMESTAMPUSEC:
+              description: Current timestamp of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-EPOCH:
+              description: Current epoch of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-BLOCK-HEIGHT:
+              description: Current block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-OLDEST-BLOCK-HEIGHT:
+              description: Oldest non-pruned block height of the chain
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+            X-APTOS-GAS-USED:
+              description: The cost of the call in terms of gas
+              deprecated: false
+              schema:
+                type: integer
+                format: uint64
+      operationId: get_account_balance
   /accounts/{address}/modules:
     get:
       tags:
@@ -1416,6 +1864,20 @@ paths:
               schema:
                 type: string
       operationId: spec
+  /info:
+    get:
+      tags:
+      - General
+      summary: Show some basic info of the node.
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+      operationId: info
   /-/healthy:
     get:
       tags:
@@ -10424,6 +10886,16 @@ paths:
       operationId: view
 components:
   schemas:
+    AbstractionSignature:
+      type: object
+      required:
+      - function_info
+      - auth_data
+      properties:
+        function_info:
+          type: string
+        auth_data:
+          $ref: '#/components/schemas/HexEncodedBytes'
     AccountData:
       type: object
       description: |-
@@ -10453,6 +10925,8 @@ components:
       - $ref: '#/components/schemas/AccountSignature_MultiEd25519Signature'
       - $ref: '#/components/schemas/AccountSignature_SingleKeySignature'
       - $ref: '#/components/schemas/AccountSignature_MultiKeySignature'
+      - $ref: '#/components/schemas/AccountSignature_NoAccountSignature'
+      - $ref: '#/components/schemas/AccountSignature_AbstractionSignature'
       discriminator:
         propertyName: type
         mapping:
@@ -10460,6 +10934,20 @@ components:
           multi_ed25519_signature: '#/components/schemas/AccountSignature_MultiEd25519Signature'
           single_key_signature: '#/components/schemas/AccountSignature_SingleKeySignature'
           multi_key_signature: '#/components/schemas/AccountSignature_MultiKeySignature'
+          no_account_signature: '#/components/schemas/AccountSignature_NoAccountSignature'
+          abstraction_signature: '#/components/schemas/AccountSignature_AbstractionSignature'
+    AccountSignature_AbstractionSignature:
+      allOf:
+      - type: object
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - abstraction_signature
+            example: abstraction_signature
+      - $ref: '#/components/schemas/AbstractionSignature'
     AccountSignature_Ed25519Signature:
       allOf:
       - type: object
@@ -10468,6 +10956,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - ed25519_signature
             example: ed25519_signature
       - $ref: '#/components/schemas/Ed25519Signature'
     AccountSignature_MultiEd25519Signature:
@@ -10478,6 +10968,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - multi_ed25519_signature
             example: multi_ed25519_signature
       - $ref: '#/components/schemas/MultiEd25519Signature'
     AccountSignature_MultiKeySignature:
@@ -10488,8 +10980,22 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - multi_key_signature
             example: multi_key_signature
       - $ref: '#/components/schemas/MultiKeySignature'
+    AccountSignature_NoAccountSignature:
+      allOf:
+      - type: object
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - no_account_signature
+            example: no_account_signature
+      - $ref: '#/components/schemas/NoAccountSignature'
     AccountSignature_SingleKeySignature:
       allOf:
       - type: object
@@ -10498,6 +11004,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - single_key_signature
             example: single_key_signature
       - $ref: '#/components/schemas/SingleKeySignature'
     Address:
@@ -10556,6 +11064,16 @@ components:
       - web_framework_error
       - bcs_not_supported
       - api_disabled
+    AssetType:
+      type: string
+      format: hex
+      description: |
+        A hex encoded 32 byte Aptos account address or a struct tag.
+
+        This is represented in a string as a 64 character hex string, sometimes
+        shortened by stripping leading 0s, and adding a 0x or
+        Format: `{address}::{module name}::{struct name}`
+      example: 0x1::aptos_coin::AptosCoin
     Block:
       type: object
       description: |-
@@ -10647,6 +11165,47 @@ components:
           $ref: '#/components/schemas/U64'
         block_end_info:
           $ref: '#/components/schemas/BlockEndInfo'
+    BlockMetadataExtension:
+      type: object
+      oneOf:
+      - $ref: '#/components/schemas/BlockMetadataExtension_BlockMetadataExtensionEmpty'
+      - $ref: '#/components/schemas/BlockMetadataExtension_BlockMetadataExtensionRandomness'
+      discriminator:
+        propertyName: type
+        mapping:
+          v0: '#/components/schemas/BlockMetadataExtension_BlockMetadataExtensionEmpty'
+          v1: '#/components/schemas/BlockMetadataExtension_BlockMetadataExtensionRandomness'
+    BlockMetadataExtensionEmpty:
+      type: object
+    BlockMetadataExtensionRandomness:
+      type: object
+      properties:
+        randomness:
+          $ref: '#/components/schemas/HexEncodedBytes'
+    BlockMetadataExtension_BlockMetadataExtensionEmpty:
+      allOf:
+      - type: object
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - v0
+            example: v0
+      - $ref: '#/components/schemas/BlockMetadataExtensionEmpty'
+    BlockMetadataExtension_BlockMetadataExtensionRandomness:
+      allOf:
+      - type: object
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - v1
+            example: v1
+      - $ref: '#/components/schemas/BlockMetadataExtensionRandomness'
     BlockMetadataTransaction:
       type: object
       description: |-
@@ -10725,6 +11284,18 @@ components:
             format: uint32
         timestamp:
           $ref: '#/components/schemas/U64'
+        block_metadata_extension:
+          allOf:
+          - $ref: '#/components/schemas/BlockMetadataExtension'
+          - description: |-
+              If some, it means the internal txn type is `aptos_types::transaction::Transaction::BlockMetadataExt`.
+              Otherwise, it is `aptos_types::transaction::Transaction::BlockMetadata`.
+
+              NOTE: we could have introduced a new APT txn type to represent the corresponding internal type,
+              but that is a breaking change to the ecosystem.
+
+              NOTE: `oai` does not support `flatten` together with `skip_serializing_if`.
+            default: null
     DKGResultTransaction:
       type: object
       required:
@@ -11022,6 +11593,13 @@ components:
           $ref: '#/components/schemas/ExportedProviderJWKs'
         multi_sig:
           $ref: '#/components/schemas/ExportedAggregateSignature'
+    FederatedKeyless:
+      type: object
+      required:
+      - value
+      properties:
+        value:
+          $ref: '#/components/schemas/HexEncodedBytes'
     FeePayerSignature:
       type: object
       description: |-
@@ -11090,6 +11668,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - write_set_payload
             example: write_set_payload
       - $ref: '#/components/schemas/WriteSetPayload'
     GenesisTransaction:
@@ -11409,6 +11989,7 @@ components:
       required:
       - name
       - is_native
+      - is_event
       - abilities
       - generic_type_params
       - fields
@@ -11418,6 +11999,9 @@ components:
         is_native:
           type: boolean
           description: Whether the struct is a native struct of Move
+        is_event:
+          type: boolean
+          description: 'Whether the struct is marked with the #[event] annotation'
         abilities:
           type: array
           description: Abilities associated with the struct
@@ -11515,7 +12099,7 @@ components:
           `{ "created": "0xa550c18", "role_id": "0" }`
 
         **Special serialization for Move stdlib types**:
-          - [0x1::string::String](https://github.com/aptos-labs/aptos-core/blob/main/language/move-stdlib/docs/ascii.md)
+          - [0x1::string::String](https://github.com/aptos-labs/aptos-core/blob/main/third_party/move/move-stdlib/docs/ascii.md)
             is serialized into `string`. For example, struct value `0x1::string::String{bytes: b"Hello World!"}`
             is serialized as `"Hello World!"` in JSON.
       example:
@@ -11677,8 +12261,13 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - entry_function_payload
             example: entry_function_payload
       - $ref: '#/components/schemas/EntryFunctionPayload'
+    NoAccountSignature:
+      type: object
+      description: A placeholder to represent the absence of account signature
     PendingTransaction:
       type: object
       description: A transaction waiting in mempool
@@ -11714,6 +12303,7 @@ components:
       - $ref: '#/components/schemas/PublicKey_Secp256k1Ecdsa'
       - $ref: '#/components/schemas/PublicKey_Secp256r1Ecdsa'
       - $ref: '#/components/schemas/PublicKey_Keyless'
+      - $ref: '#/components/schemas/PublicKey_FederatedKeyless'
       discriminator:
         propertyName: type
         mapping:
@@ -11721,6 +12311,7 @@ components:
           secp256k1_ecdsa: '#/components/schemas/PublicKey_Secp256k1Ecdsa'
           secp256r1_ecdsa: '#/components/schemas/PublicKey_Secp256r1Ecdsa'
           keyless: '#/components/schemas/PublicKey_Keyless'
+          federated_keyless: '#/components/schemas/PublicKey_FederatedKeyless'
     PublicKey_Ed25519:
       allOf:
       - type: object
@@ -11729,8 +12320,22 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - ed25519
             example: ed25519
       - $ref: '#/components/schemas/Ed25519'
+    PublicKey_FederatedKeyless:
+      allOf:
+      - type: object
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - federated_keyless
+            example: federated_keyless
+      - $ref: '#/components/schemas/FederatedKeyless'
     PublicKey_Keyless:
       allOf:
       - type: object
@@ -11739,6 +12344,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - keyless
             example: keyless
       - $ref: '#/components/schemas/Keyless'
     PublicKey_Secp256k1Ecdsa:
@@ -11749,6 +12356,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - secp256k1_ecdsa
             example: secp256k1_ecdsa
       - $ref: '#/components/schemas/Secp256k1Ecdsa'
     PublicKey_Secp256r1Ecdsa:
@@ -11759,6 +12368,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - secp256r1_ecdsa
             example: secp256r1_ecdsa
       - $ref: '#/components/schemas/Secp256r1Ecdsa'
     RSA_JWK:
@@ -11861,6 +12472,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - ed25519
             example: ed25519
       - $ref: '#/components/schemas/Ed25519'
     Signature_Keyless:
@@ -11871,6 +12484,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - keyless
             example: keyless
       - $ref: '#/components/schemas/Keyless'
     Signature_Secp256k1Ecdsa:
@@ -11881,6 +12496,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - secp256k1_ecdsa
             example: secp256k1_ecdsa
       - $ref: '#/components/schemas/Secp256k1Ecdsa'
     Signature_WebAuthn:
@@ -11891,6 +12508,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - web_authn
             example: web_authn
       - $ref: '#/components/schemas/WebAuthn'
     SingleKeySignature:
@@ -12038,6 +12657,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - module_bundle_payload
             example: module_bundle_payload
       - $ref: '#/components/schemas/DeprecatedModuleBundlePayload'
     TransactionPayload_EntryFunctionPayload:
@@ -12048,6 +12669,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - entry_function_payload
             example: entry_function_payload
       - $ref: '#/components/schemas/EntryFunctionPayload'
     TransactionPayload_MultisigPayload:
@@ -12058,6 +12681,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - multisig_payload
             example: multisig_payload
       - $ref: '#/components/schemas/MultisigPayload'
     TransactionPayload_ScriptPayload:
@@ -12068,6 +12693,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - script_payload
             example: script_payload
       - $ref: '#/components/schemas/ScriptPayload'
     TransactionSignature:
@@ -12079,6 +12706,7 @@ components:
       - $ref: '#/components/schemas/TransactionSignature_MultiAgentSignature'
       - $ref: '#/components/schemas/TransactionSignature_FeePayerSignature'
       - $ref: '#/components/schemas/TransactionSignature_AccountSignature'
+      - $ref: '#/components/schemas/TransactionSignature_NoAccountSignature'
       discriminator:
         propertyName: type
         mapping:
@@ -12087,6 +12715,7 @@ components:
           multi_agent_signature: '#/components/schemas/TransactionSignature_MultiAgentSignature'
           fee_payer_signature: '#/components/schemas/TransactionSignature_FeePayerSignature'
           single_sender: '#/components/schemas/TransactionSignature_AccountSignature'
+          no_account_signature: '#/components/schemas/TransactionSignature_NoAccountSignature'
     TransactionSignature_AccountSignature:
       allOf:
       - type: object
@@ -12095,6 +12724,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - single_sender
             example: single_sender
       - $ref: '#/components/schemas/AccountSignature'
     TransactionSignature_Ed25519Signature:
@@ -12105,6 +12736,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - ed25519_signature
             example: ed25519_signature
       - $ref: '#/components/schemas/Ed25519Signature'
     TransactionSignature_FeePayerSignature:
@@ -12115,6 +12748,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - fee_payer_signature
             example: fee_payer_signature
       - $ref: '#/components/schemas/FeePayerSignature'
     TransactionSignature_MultiAgentSignature:
@@ -12125,6 +12760,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - multi_agent_signature
             example: multi_agent_signature
       - $ref: '#/components/schemas/MultiAgentSignature'
     TransactionSignature_MultiEd25519Signature:
@@ -12135,8 +12772,22 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - multi_ed25519_signature
             example: multi_ed25519_signature
       - $ref: '#/components/schemas/MultiEd25519Signature'
+    TransactionSignature_NoAccountSignature:
+      allOf:
+      - type: object
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - no_account_signature
+            example: no_account_signature
+      - $ref: '#/components/schemas/NoAccountSignature'
     Transaction_BlockEpilogueTransaction:
       allOf:
       - type: object
@@ -12145,6 +12796,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - block_epilogue_transaction
             example: block_epilogue_transaction
       - $ref: '#/components/schemas/BlockEpilogueTransaction'
     Transaction_BlockMetadataTransaction:
@@ -12155,6 +12808,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - block_metadata_transaction
             example: block_metadata_transaction
       - $ref: '#/components/schemas/BlockMetadataTransaction'
     Transaction_GenesisTransaction:
@@ -12165,6 +12820,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - genesis_transaction
             example: genesis_transaction
       - $ref: '#/components/schemas/GenesisTransaction'
     Transaction_PendingTransaction:
@@ -12175,6 +12832,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - pending_transaction
             example: pending_transaction
       - $ref: '#/components/schemas/PendingTransaction'
     Transaction_StateCheckpointTransaction:
@@ -12185,6 +12844,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - state_checkpoint_transaction
             example: state_checkpoint_transaction
       - $ref: '#/components/schemas/StateCheckpointTransaction'
     Transaction_UserTransaction:
@@ -12195,6 +12856,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - user_transaction
             example: user_transaction
       - $ref: '#/components/schemas/UserTransaction'
     Transaction_ValidatorTransaction:
@@ -12205,6 +12868,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - validator_transaction
             example: validator_transaction
       - $ref: '#/components/schemas/ValidatorTransaction'
     TransactionsBatchSingleSubmissionFailure:
@@ -12366,6 +13031,8 @@ components:
         properties:
           validator_transaction_type:
             type: string
+            enum:
+            - dkg_result
             example: dkg_result
       - $ref: '#/components/schemas/DKGResultTransaction'
     ValidatorTransaction_JWKUpdateTransaction:
@@ -12376,6 +13043,8 @@ components:
         properties:
           validator_transaction_type:
             type: string
+            enum:
+            - observed_jwk_update
             example: observed_jwk_update
       - $ref: '#/components/schemas/JWKUpdateTransaction'
     VersionedEvent:
@@ -12492,6 +13161,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - delete_module
             example: delete_module
       - $ref: '#/components/schemas/DeleteModule'
     WriteSetChange_DeleteResource:
@@ -12502,6 +13173,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - delete_resource
             example: delete_resource
       - $ref: '#/components/schemas/DeleteResource'
     WriteSetChange_DeleteTableItem:
@@ -12512,6 +13185,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - delete_table_item
             example: delete_table_item
       - $ref: '#/components/schemas/DeleteTableItem'
     WriteSetChange_WriteModule:
@@ -12522,6 +13197,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - write_module
             example: write_module
       - $ref: '#/components/schemas/WriteModule'
     WriteSetChange_WriteResource:
@@ -12532,6 +13209,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - write_resource
             example: write_resource
       - $ref: '#/components/schemas/WriteResource'
     WriteSetChange_WriteTableItem:
@@ -12542,6 +13221,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - write_table_item
             example: write_table_item
       - $ref: '#/components/schemas/WriteTableItem'
     WriteSetPayload:
@@ -12560,6 +13241,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - direct_write_set
             example: direct_write_set
       - $ref: '#/components/schemas/DirectWriteSet'
     WriteSet_ScriptWriteSet:
@@ -12570,6 +13253,8 @@ components:
         properties:
           type:
             type: string
+            enum:
+            - script_write_set
             example: script_write_set
       - $ref: '#/components/schemas/ScriptWriteSet'
     WriteTableItem:

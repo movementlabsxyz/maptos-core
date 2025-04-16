@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 use std::collections::VecDeque;
 
 /***************************************************************************************************
- * native fun dispatchable_withdraw / dispatchable_deposit / dispatchable_derived_balance
+ * native fun dispatchable_withdraw / dispatchable_deposit / dispatchable_derived_balance / dispatchable_derived_supply
  *
  *   Directs control flow based on the last argument. We use the same native function implementation
  *   for all dispatching native.
@@ -25,11 +25,23 @@ pub(crate) fn native_dispatch(
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     let (module_name, func_name) = extract_function_info(&mut arguments)?;
     // Check if the module is already properly charged in this transaction.
-    if !context
-        .traversal_context()
-        .visited
-        .contains_key(&(module_name.address(), module_name.name()))
+    let is_err = if context.get_feature_flags().is_account_abstraction_enabled()
+        || context
+            .get_feature_flags()
+            .is_derivable_account_abstraction_enabled()
     {
+        !module_name.address().is_special()
+            && !context
+                .traversal_context()
+                .visited
+                .contains_key(&(module_name.address(), module_name.name()))
+    } else {
+        !context
+            .traversal_context()
+            .visited
+            .contains_key(&(module_name.address(), module_name.name()))
+    };
+    if is_err {
         return Err(SafeNativeError::Abort { abort_code: 4 });
     }
 
@@ -54,6 +66,7 @@ pub fn make_all(
         ("dispatchable_withdraw", native_dispatch as RawSafeNative),
         ("dispatchable_deposit", native_dispatch),
         ("dispatchable_derived_balance", native_dispatch),
+        ("dispatchable_derived_supply", native_dispatch),
     ];
 
     builder.make_named_natives(natives)

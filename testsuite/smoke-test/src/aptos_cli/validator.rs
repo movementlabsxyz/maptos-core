@@ -202,7 +202,11 @@ async fn test_onchain_config_change() {
                     alg: ConsensusAlgorithmConfig::Jolteon { main, .. },
                     ..
                 } => main,
-                _ => unimplemented!(),
+                OnChainConsensusConfig::V4 {
+                    alg: ConsensusAlgorithmConfig::Jolteon { main, .. },
+                    ..
+                } => main,
+                _ => panic!("Other branches for OnChainConsensusConfig are not covered"),
             };
 
             let leader_reputation_type =
@@ -388,7 +392,7 @@ async fn test_onchain_shuffling_change() {
 
     assert_eq!(
         current_execution_config.transaction_shuffler_type(),
-        TransactionShufflerType::SenderAwareV2(32),
+        TransactionShufflerType::default_for_genesis(),
     );
 
     assert_reordering(&mut swarm, true).await;
@@ -1340,6 +1344,7 @@ async fn test_owner_create_and_delegate_flow() {
             Some(owner_cli_index),
             operator_keys.consensus_public_key(),
             operator_keys.consensus_proof_of_possession(),
+            None,
         )
         .await
         .unwrap(),

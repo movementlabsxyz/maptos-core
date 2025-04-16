@@ -3,12 +3,13 @@
 
 mod function_generator;
 mod module_generator;
+mod peephole_optimizer;
 
 use crate::{file_format_generator::module_generator::ModuleContext, options::Options, Experiment};
+use legacy_move_compiler::compiled_unit as CU;
 use module_generator::ModuleGenerator;
 use move_binary_format::{file_format as FF, internals::ModuleIndex};
 use move_command_line_common::{address::NumericalAddress, parser::NumberFormat};
-use move_compiler::compiled_unit as CU;
 use move_model::{
     ast::ModuleName,
     model::{GlobalEnv, SCRIPT_MODULE_NAME},
@@ -90,6 +91,8 @@ pub fn generate_file_format(
                     code,
                     type_parameters,
                     parameters,
+                    // TODO(#16278): support rac
+                    access_specifiers: None,
                 };
                 if options.experiment_on(Experiment::ATTACH_COMPILED_MODULE) {
                     let module_name =
@@ -145,6 +148,8 @@ const MAX_STRUCT_COUNT: usize = FF::TableIndex::MAX as usize;
 const MAX_SIGNATURE_COUNT: usize = FF::TableIndex::MAX as usize;
 const MAX_STRUCT_DEF_COUNT: usize = FF::TableIndex::MAX as usize;
 const MAX_STRUCT_DEF_INST_COUNT: usize = FF::TableIndex::MAX as usize;
+const MAX_STRUCT_VARIANT_COUNT: usize = FF::TableIndex::MAX as usize;
+const MAX_STRUCT_VARIANT_INST_COUNT: usize = FF::TableIndex::MAX as usize;
 const MAX_FIELD_COUNT: usize = FF::TableIndex::MAX as usize;
 const MAX_FIELD_INST_COUNT: usize = FF::TableIndex::MAX as usize;
 const MAX_FUNCTION_COUNT: usize = FF::TableIndex::MAX as usize;

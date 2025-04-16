@@ -80,7 +80,6 @@ target-out-docker
 docker/compose/indexer-grpc/data-service-grpc-server.crt
 docker/compose/indexer-grpc/data-service-grpc-server.key
 
-
 # Doc generation output
 *.md.old
 
@@ -130,11 +129,12 @@ run_*
 # test files for indexer GRPC
 test_indexer_grpc_*.yaml
 test_indexer_grpc/*
+ecosystem/indexer-grpc/indexer-transaction-generator/*.yaml
 
 # ignore compiler artifacts
 *.dot
 *.bytecode
 !third_party/move/move-prover/tests/xsources/design/*.bytecode
 
-# ignore boogie bpl
-boogie.bpl
+# ignore antithesis
+genesis_antithesis_*/

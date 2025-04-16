@@ -4,9 +4,8 @@
 #![forbid(unsafe_code)]
 
 use crate::{
-    docgen::DocgenOptions, extended_checks, path_in_crate,
-    release_builder::RELEASE_BUNDLE_EXTENSION, release_bundle::ReleaseBundle, BuildOptions,
-    ReleaseOptions,
+    docgen::DocgenOptions, path_in_crate, release_builder::RELEASE_BUNDLE_EXTENSION,
+    release_bundle::ReleaseBundle, BuildOptions, ReleaseOptions,
 };
 use clap::ValueEnum;
 use move_command_line_common::address::NumericalAddress;
@@ -72,6 +71,7 @@ impl ReleaseTarget {
                 "aptos-token-objects",
                 Some("cached-packages/src/aptos_token_objects_sdk_builder.rs"),
             ),
+            ("aptos-experimental", None),
         ];
         // Currently we don't have experimental packages only included in particular targets.
         result
@@ -100,14 +100,8 @@ impl ReleaseTarget {
             .collect::<Vec<_>>();
         ReleaseOptions {
             build_options: BuildOptions {
-                dev: false,
                 with_srcs,
                 with_abis: true,
-                with_source_maps: false,
-                with_error_map: true,
-                named_addresses: Default::default(),
-                override_std: None,
-                install_dir: None,
                 with_docs: true,
                 docgen_options: Some(DocgenOptions {
                     include_impl: true,
@@ -120,12 +114,7 @@ impl ReleaseTarget {
                     output_format: None,
                 }),
                 skip_fetch_latest_git_deps: true,
-                bytecode_version: None,
-                compiler_version: None,
-                language_version: None,
-                skip_attribute_checks: false,
-                check_test_code: false,
-                known_attributes: extended_checks::get_all_attribute_names().clone(),
+                ..BuildOptions::default()
             },
             packages: packages.iter().map(|(path, _)| path.to_owned()).collect(),
             rust_bindings: packages
@@ -183,6 +172,7 @@ static NAMED_ADDRESSES: Lazy<BTreeMap<String, NumericalAddress>> = Lazy::new(|| 
     let one = NumericalAddress::parse_str("0x1").unwrap();
     let three = NumericalAddress::parse_str("0x3").unwrap();
     let four = NumericalAddress::parse_str("0x4").unwrap();
+    let seven = NumericalAddress::parse_str("0x7").unwrap();
     let ten = NumericalAddress::parse_str("0xA").unwrap();
     let resources = NumericalAddress::parse_str("0xA550C18").unwrap();
     result.insert("std".to_owned(), one);
@@ -190,6 +180,7 @@ static NAMED_ADDRESSES: Lazy<BTreeMap<String, NumericalAddress>> = Lazy::new(|| 
     result.insert("aptos_framework".to_owned(), one);
     result.insert("aptos_token".to_owned(), three);
     result.insert("aptos_token_objects".to_owned(), four);
+    result.insert("aptos_experimental".to_owned(), seven);
     result.insert("aptos_fungible_asset".to_owned(), ten);
     result.insert("core_resources".to_owned(), resources);
     result.insert("vm".to_owned(), zero);

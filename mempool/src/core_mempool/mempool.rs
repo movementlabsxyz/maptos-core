@@ -8,11 +8,14 @@ use crate::{
     core_mempool::{
         index::TxnPointer,
         transaction::{InsertionInfo, MempoolTransaction, TimelineState},
-        transaction_store::TransactionStore,
+        transaction_store::{sender_bucket, TransactionStore},
     },
     counters,
     logging::{LogEntry, LogSchema, TxnsLog},
-    shared_mempool::types::MultiBucketTimelineIndexIds,
+    network::BroadcastPeerPriority,
+    shared_mempool::types::{
+        MempoolSenderBucket, MultiBucketTimelineIndexIds, TimelineIndexIdentifier,
+    },
 };
 use aptos_config::config::NodeConfig;
 use aptos_consensus_types::common::{TransactionInProgress, TransactionSummary};
@@ -21,11 +24,11 @@ use aptos_logger::prelude::*;
 use aptos_types::{
     account_address::AccountAddress,
     mempool_status::{MempoolStatus, MempoolStatusCode},
-    transaction::SignedTransaction,
+    transaction::{use_case::UseCaseKey, SignedTransaction},
     vm_status::DiscardedVMStatus,
 };
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::atomic::Ordering,
     time::{Duration, Instant, SystemTime},
 };
@@ -48,27 +51,28 @@ impl Mempool {
     }
 
     /// This function will be called once the transaction has been stored.
-    pub fn commit_transaction(&mut self, sender: &AccountAddress, sequence_number: u64) {
+    pub(crate) fn commit_transaction(&mut self, sender: &AccountAddress, sequence_number: u64) {
         self.transactions
             .commit_transaction(sender, sequence_number);
     }
 
-    pub fn log_commit_transaction(
+    pub(crate) fn log_commit_transaction(
         &self,
         sender: &AccountAddress,
         sequence_number: u64,
+        tracked_use_case: Option<(UseCaseKey, &String)>,
         block_timestamp: Duration,
     ) {
         trace!(
             LogSchema::new(LogEntry::RemoveTxn).txns(TxnsLog::new_txn(*sender, sequence_number)),
             is_rejected = false
         );
-        self.log_commit_latency(*sender, sequence_number, block_timestamp);
+        self.log_commit_latency(*sender, sequence_number, tracked_use_case, block_timestamp);
         if let Some(ranking_score) = self.transactions.get_ranking_score(sender, sequence_number) {
             counters::core_mempool_txn_ranking_score(
                 counters::REMOVE_LABEL,
                 counters::COMMIT_ACCEPTED_LABEL,
-                self.transactions.get_bucket(ranking_score),
+                self.transactions.get_bucket(ranking_score, sender).as_str(),
                 ranking_score,
             );
         }
@@ -90,13 +94,13 @@ impl Mempool {
             counters::core_mempool_txn_ranking_score(
                 counters::REMOVE_LABEL,
                 reason_label,
-                self.transactions.get_bucket(ranking_score),
+                self.transactions.get_bucket(ranking_score, sender).as_str(),
                 ranking_score,
             );
         }
     }
 
-    pub fn reject_transaction(
+    pub(crate) fn reject_transaction(
         &mut self,
         sender: &AccountAddress,
         sequence_number: u64,
@@ -119,27 +123,40 @@ impl Mempool {
             .reject_transaction(sender, sequence_number, hash);
     }
 
-    pub fn log_txn_latency(insertion_info: &InsertionInfo, bucket: &str, stage: &'static str) {
+    pub(crate) fn log_txn_latency(
+        insertion_info: &InsertionInfo,
+        bucket: &str,
+        stage: &'static str,
+        priority: &str,
+    ) {
         if let Ok(time_delta) = SystemTime::now().duration_since(insertion_info.insertion_time) {
             counters::core_mempool_txn_commit_latency(
                 stage,
                 insertion_info.submitted_by_label(),
                 bucket,
                 time_delta,
+                priority,
             );
         }
     }
 
     fn log_consensus_pulled_latency(&self, account: AccountAddress, sequence_number: u64) {
-        if let Some((insertion_info, bucket)) = self
+        if let Some((insertion_info, bucket, priority)) = self
             .transactions
             .get_insertion_info_and_bucket(&account, sequence_number)
         {
             let prev_count = insertion_info
                 .consensus_pulled_counter
                 .fetch_add(1, Ordering::Relaxed);
-            Self::log_txn_latency(insertion_info, bucket, counters::CONSENSUS_PULLED_LABEL);
-            counters::CORE_MEMPOOL_TXN_CONSENSUS_PULLED.observe((prev_count + 1) as f64);
+            Self::log_txn_latency(
+                insertion_info,
+                bucket.as_str(),
+                counters::CONSENSUS_PULLED_LABEL,
+                priority.as_str(),
+            );
+            counters::CORE_MEMPOOL_TXN_CONSENSUS_PULLED_BY_BUCKET
+                .with_label_values(&[bucket.as_str()])
+                .observe((prev_count + 1) as f64);
         }
     }
 
@@ -149,15 +166,20 @@ impl Mempool {
         sequence_number: u64,
         stage: &'static str,
     ) {
-        if let Some((insertion_info, bucket)) = self
+        if let Some((insertion_info, bucket, priority)) = self
             .transactions
             .get_insertion_info_and_bucket(&account, sequence_number)
         {
-            Self::log_txn_latency(insertion_info, bucket, stage);
+            Self::log_txn_latency(insertion_info, bucket.as_str(), stage, priority.as_str());
         }
     }
 
-    fn log_commit_and_parked_latency(insertion_info: &InsertionInfo, bucket: &str) {
+    fn log_commit_and_parked_latency(
+        insertion_info: &InsertionInfo,
+        bucket: &str,
+        priority: &str,
+        tracked_use_case: Option<(UseCaseKey, &String)>,
+    ) {
         let parked_duration = if let Some(park_time) = insertion_info.park_time {
             let parked_duration = insertion_info
                 .ready_time
@@ -168,6 +190,7 @@ impl Mempool {
                 insertion_info.submitted_by_label(),
                 bucket,
                 parked_duration,
+                priority,
             );
             parked_duration
         } else {
@@ -184,7 +207,24 @@ impl Mempool {
                 insertion_info.submitted_by_label(),
                 bucket,
                 commit_minus_parked,
+                priority,
             );
+
+            if insertion_info.park_time.is_none() {
+                let use_case_label = tracked_use_case
+                    .as_ref()
+                    .map_or("entry_user_other", |(_, use_case_name)| {
+                        use_case_name.as_str()
+                    });
+
+                counters::TXN_E2E_USE_CASE_COMMIT_LATENCY
+                    .with_label_values(&[
+                        use_case_label,
+                        insertion_info.submitted_by_label(),
+                        bucket,
+                    ])
+                    .observe(commit_duration.as_secs_f64());
+            }
         }
     }
 
@@ -192,14 +232,25 @@ impl Mempool {
         &self,
         account: AccountAddress,
         sequence_number: u64,
+        tracked_use_case: Option<(UseCaseKey, &String)>,
         block_timestamp: Duration,
     ) {
-        if let Some((insertion_info, bucket)) = self
+        if let Some((insertion_info, bucket, priority)) = self
             .transactions
             .get_insertion_info_and_bucket(&account, sequence_number)
         {
-            Self::log_txn_latency(insertion_info, bucket, counters::COMMIT_ACCEPTED_LABEL);
-            Self::log_commit_and_parked_latency(insertion_info, bucket);
+            Self::log_txn_latency(
+                insertion_info,
+                bucket.as_str(),
+                counters::COMMIT_ACCEPTED_LABEL,
+                priority.as_str(),
+            );
+            Self::log_commit_and_parked_latency(
+                insertion_info,
+                bucket.as_str(),
+                priority.as_str(),
+                tracked_use_case,
+            );
 
             let insertion_timestamp =
                 aptos_infallible::duration_since_epoch_at(&insertion_info.insertion_time);
@@ -207,26 +258,32 @@ impl Mempool {
                 counters::core_mempool_txn_commit_latency(
                     counters::COMMIT_ACCEPTED_BLOCK_LABEL,
                     insertion_info.submitted_by_label(),
-                    bucket,
+                    bucket.as_str(),
                     insertion_to_block,
+                    priority.to_string().as_str(),
                 );
             }
         }
     }
 
-    pub fn get_by_hash(&self, hash: HashValue) -> Option<SignedTransaction> {
+    pub(crate) fn get_by_hash(&self, hash: HashValue) -> Option<SignedTransaction> {
         self.transactions.get_by_hash(hash)
     }
 
     /// Used to add a transaction to the Mempool.
     /// Performs basic validation: checks account's sequence number.
-    pub fn add_txn(
+    pub(crate) fn add_txn(
         &mut self,
         txn: SignedTransaction,
         ranking_score: u64,
         db_sequence_number: u64,
         timeline_state: TimelineState,
         client_submitted: bool,
+        // The time at which the transaction was inserted into the mempool of the
+        // downstream node (sender of the mempool transaction) in millis since epoch
+        ready_time_at_sender: Option<u64>,
+        // The prority of this node for the peer that sent the transaction
+        priority: Option<BroadcastPeerPriority>,
     ) -> MempoolStatus {
         trace!(
             LogSchema::new(LogEntry::AddTxn)
@@ -247,21 +304,50 @@ impl Mempool {
         let expiration_time =
             aptos_infallible::duration_since_epoch_at(&now) + self.system_transaction_timeout;
 
+        let sender = txn.sender();
         let txn_info = MempoolTransaction::new(
-            txn,
+            txn.clone(),
             expiration_time,
             ranking_score,
             timeline_state,
             db_sequence_number,
             now,
             client_submitted,
+            priority.clone(),
         );
 
+        let submitted_by_label = txn_info.insertion_info.submitted_by_label();
         let status = self.transactions.insert(txn_info);
+        let now = aptos_infallible::duration_since_epoch().as_millis() as u64;
+
+        if status.code == MempoolStatusCode::Accepted {
+            counters::SENDER_BUCKET_FREQUENCIES
+                .with_label_values(&[sender_bucket(
+                    &sender,
+                    self.transactions.num_sender_buckets(),
+                )
+                .to_string()
+                .as_str()])
+                .inc();
+            if let Some(ready_time_at_sender) = ready_time_at_sender {
+                let bucket = self.transactions.get_bucket(ranking_score, &sender);
+                counters::core_mempool_txn_commit_latency(
+                    counters::BROADCAST_RECEIVED_LABEL,
+                    submitted_by_label,
+                    bucket.as_str(),
+                    Duration::from_millis(now.saturating_sub(ready_time_at_sender)),
+                    priority
+                        .map_or_else(|| "Unknown".to_string(), |priority| priority.to_string())
+                        .as_str(),
+                );
+            }
+        }
         counters::core_mempool_txn_ranking_score(
             counters::INSERT_LABEL,
             status.code.to_string().as_str(),
-            self.transactions.get_bucket(ranking_score),
+            self.transactions
+                .get_bucket(ranking_score, &sender)
+                .as_str(),
             ranking_score,
         );
         status
@@ -300,13 +386,13 @@ impl Mempool {
     /// `exclude_transactions` - transactions that were sent to Consensus but were not committed yet
     ///  mempool should filter out such transactions.
     #[allow(clippy::explicit_counter_loop)]
-    pub fn get_batch_with_ranking_score(
+    pub(crate) fn get_batch(
         &self,
         max_txns: u64,
         max_bytes: u64,
         return_non_full: bool,
         exclude_transactions: BTreeMap<TransactionSummary, TransactionInProgress>,
-    ) -> Vec<(SignedTransaction, u64)> {
+    ) -> Vec<SignedTransaction> {
         let start_time = Instant::now();
         let exclude_size = exclude_transactions.len();
         let mut inserted = HashSet::new();
@@ -377,14 +463,16 @@ impl Mempool {
                     break;
                 }
                 total_bytes += txn_size;
-                block.push((txn, ranking_score));
+                block.push(txn);
                 if total_bytes == max_bytes {
                     full_bytes = true;
                 }
                 counters::core_mempool_txn_ranking_score(
                     counters::CONSENSUS_PULLED_LABEL,
                     counters::CONSENSUS_PULLED_LABEL,
-                    self.transactions.get_bucket(ranking_score),
+                    self.transactions
+                        .get_bucket(ranking_score, &sender)
+                        .as_str(),
                     ranking_score,
                 );
             }
@@ -431,57 +519,69 @@ impl Mempool {
 
         counters::mempool_service_transactions(counters::GET_BLOCK_LABEL, block.len());
         counters::MEMPOOL_SERVICE_BYTES_GET_BLOCK.observe(total_bytes as f64);
-        for (transaction, _) in &block {
+        for transaction in &block {
             self.log_consensus_pulled_latency(transaction.sender(), transaction.sequence_number());
         }
         block
     }
 
-    pub fn get_batch(
-        &self,
-        max_txns: u64,
-        max_bytes: u64,
-        return_non_full: bool,
-        exclude_transactions: BTreeMap<TransactionSummary, TransactionInProgress>,
-    ) -> Vec<SignedTransaction> {
-        let batch_with_ranking_score = self.get_batch_with_ranking_score(
-            max_txns,
-            max_bytes,
-            return_non_full,
-            exclude_transactions,
-        );
-        batch_with_ranking_score
-            .into_iter()
-            .map(|(txn, _)| txn)
-            .collect()
-    }
-
     /// Periodic core mempool garbage collection.
     /// Removes all expired transactions and clears expired entries in metrics
     /// cache and sequence number cache.
-    pub fn gc(&mut self) {
+    pub(crate) fn gc(&mut self) {
         let now = aptos_infallible::duration_since_epoch();
         self.transactions.gc_by_system_ttl(now);
     }
 
     /// Garbage collection based on client-specified expiration time.
-    pub fn gc_by_expiration_time(&mut self, block_time: Duration) {
+    pub(crate) fn gc_by_expiration_time(&mut self, block_time: Duration) {
         self.transactions.gc_by_expiration_time(block_time);
     }
 
-    /// Returns block of transactions and new last_timeline_id.
-    pub fn read_timeline(
+    /// Returns block of transactions and new last_timeline_id. For each transaction, the output includes
+    /// the transaction ready time in millis since epoch
+    pub(crate) fn read_timeline(
         &self,
+        sender_bucket: MempoolSenderBucket,
         timeline_id: &MultiBucketTimelineIndexIds,
         count: usize,
         before: Option<Instant>,
-    ) -> (Vec<SignedTransaction>, MultiBucketTimelineIndexIds) {
-        self.transactions.read_timeline(timeline_id, count, before)
+        priority_of_receiver: BroadcastPeerPriority,
+    ) -> (Vec<(SignedTransaction, u64)>, MultiBucketTimelineIndexIds) {
+        self.transactions.read_timeline(
+            sender_bucket,
+            timeline_id,
+            count,
+            before,
+            priority_of_receiver,
+        )
     }
 
-    /// Read transactions from timeline from `start_id` (exclusive) to `end_id` (inclusive).
-    pub fn timeline_range(&self, start_end_pairs: &Vec<(u64, u64)>) -> Vec<SignedTransaction> {
-        self.transactions.timeline_range(start_end_pairs)
+    /// Read transactions from timeline from `start_id` (exclusive) to `end_id` (inclusive),
+    /// along with their ready times in millis since poch
+    pub(crate) fn timeline_range(
+        &self,
+        sender_bucket: MempoolSenderBucket,
+        start_end_pairs: HashMap<TimelineIndexIdentifier, (u64, u64)>,
+    ) -> Vec<(SignedTransaction, u64)> {
+        self.transactions
+            .timeline_range(sender_bucket, start_end_pairs)
+    }
+
+    pub(crate) fn timeline_range_of_message(
+        &self,
+        sender_start_end_pairs: HashMap<
+            MempoolSenderBucket,
+            HashMap<TimelineIndexIdentifier, (u64, u64)>,
+        >,
+    ) -> Vec<(SignedTransaction, u64)> {
+        sender_start_end_pairs
+            .iter()
+            .flat_map(|(sender_bucket, start_end_pairs)| {
+                self.transactions
+                    .timeline_range(*sender_bucket, start_end_pairs.clone())
+            })
+            .collect()
     }
 
     pub fn gen_snapshot(&self) -> TxnsLog {
@@ -496,5 +596,9 @@ impl Mempool {
     #[cfg(test)]
     pub fn get_transaction_store(&self) -> &TransactionStore {
         &self.transactions
+    }
+
+    pub fn get_parking_lot_addresses(&self) -> Vec<(AccountAddress, u64)> {
+        self.transactions.get_parking_lot_addresses()
     }
 }

@@ -9,7 +9,7 @@ use aptos_gas_schedule::{
     AptosGasParameters, FromOnChainGasSchedule, InitialGasSchedule, ToOnChainGasSchedule,
 };
 use aptos_language_e2e_tests::{
-    account::{Account, AccountData, TransactionBuilder},
+    account::{Account, TransactionBuilder},
     executor::FakeExecutor,
 };
 use aptos_types::{
@@ -20,6 +20,7 @@ use aptos_types::{
     },
     chain_id::ChainId,
     contract_event::ContractEvent,
+    fee_statement::FeeStatement,
     move_utils::MemberId,
     on_chain_config::{FeatureFlag, GasScheduleV2, OnChainConfig},
     state_store::{
@@ -31,6 +32,7 @@ use aptos_types::{
         TransactionArgument, TransactionOutput, TransactionPayload, TransactionStatus,
         ViewFunctionOutput,
     },
+    AptosCoinType,
 };
 use claims::assert_ok;
 use move_core_types::{
@@ -153,8 +155,9 @@ impl MoveHarness {
     }
 
     pub fn store_and_fund_account(&mut self, acc: &Account, balance: u64, seq_num: u64) -> Account {
-        let data = AccountData::with_account(acc.clone(), balance, seq_num);
-        self.executor.add_account_data(&data);
+        let data = self
+            .executor
+            .store_and_fund_account(acc.clone(), balance, seq_num);
         self.txn_seq_no.insert(*acc.address(), seq_num);
         data.account().clone()
     }
@@ -193,12 +196,11 @@ impl MoveHarness {
 
     /// Runs a signed transaction. On success, applies the write set.
     pub fn run_raw(&mut self, txn: SignedTransaction) -> TransactionOutput {
-        let mut output = self.executor.execute_transaction(txn);
+        let output = self.executor.execute_transaction(txn);
         if matches!(output.status(), TransactionStatus::Keep(_)) {
             self.executor.apply_write_set(output.write_set());
             self.executor.append_events(output.events().to_vec());
         }
-        output.fill_error_status();
         output
     }
 
@@ -236,12 +238,11 @@ impl MoveHarness {
         &mut self,
         txn_block: Vec<SignedTransaction>,
     ) -> Vec<TransactionOutput> {
-        let mut result = assert_ok!(self.executor.execute_block(txn_block));
-        for output in &mut result {
+        let result = assert_ok!(self.executor.execute_block(txn_block));
+        for output in &result {
             if matches!(output.status(), TransactionStatus::Keep(_)) {
                 self.executor.apply_write_set(output.write_set());
             }
-            output.fill_error_status();
         }
         result
     }
@@ -252,8 +253,8 @@ impl MoveHarness {
         account: &Account,
         payload: TransactionPayload,
     ) -> TransactionBuilder {
-        let on_chain_seq_no = self.sequence_number(account.address());
-        let seq_no_ref = self.txn_seq_no.get_mut(account.address()).unwrap();
+        let on_chain_seq_no = self.sequence_number_opt(account.address()).unwrap_or(0);
+        let seq_no_ref = self.txn_seq_no.entry(*account.address()).or_insert(0);
         let seq_no = std::cmp::max(on_chain_seq_no, *seq_no_ref);
         *seq_no_ref = seq_no + 1;
         account
@@ -321,7 +322,7 @@ impl MoveHarness {
         &mut self,
         account: &Account,
         payload: TransactionPayload,
-    ) -> (TransactionGasLog, u64) {
+    ) -> (TransactionGasLog, u64, Option<FeeStatement>) {
         let txn = self.create_transaction_payload(account, payload);
         let (output, gas_log) = self
             .executor
@@ -330,7 +331,11 @@ impl MoveHarness {
         if matches!(output.status(), TransactionStatus::Keep(_)) {
             self.executor.apply_write_set(output.write_set());
         }
-        (gas_log, output.gas_used())
+        (
+            gas_log,
+            output.gas_used(),
+            output.try_extract_fee_statement().unwrap(),
+        )
     }
 
     /// Creates a transaction which runs the specified entry point `fun`. Arguments need to be
@@ -630,7 +635,7 @@ impl MoveHarness {
         &mut self,
         account: &Account,
         path: &Path,
-    ) -> (TransactionGasLog, u64) {
+    ) -> (TransactionGasLog, u64, Option<FeeStatement>) {
         let txn = self.create_publish_package(account, path, None, |_| {});
         let (output, gas_log) = self
             .executor
@@ -639,7 +644,11 @@ impl MoveHarness {
         if matches!(output.status(), TransactionStatus::Keep(_)) {
             self.executor.apply_write_set(output.write_set());
         }
-        (gas_log, output.gas_used())
+        (
+            gas_log,
+            output.gas_used(),
+            output.try_extract_fee_statement().unwrap(),
+        )
     }
 
     /// Runs transaction which publishes the Move Package.
@@ -781,12 +790,15 @@ impl MoveHarness {
     }
 
     pub fn read_aptos_balance(&self, addr: &AccountAddress) -> u64 {
-        self.read_resource::<CoinStoreResource>(addr, CoinStoreResource::struct_tag())
-            .map(|c| c.coin())
-            .unwrap_or(0)
+        self.read_resource::<CoinStoreResource<AptosCoinType>>(
+            addr,
+            CoinStoreResource::<AptosCoinType>::struct_tag(),
+        )
+        .map(|c| c.coin())
+        .unwrap_or(0)
             + self
                 .read_resource_from_resource_group::<FungibleStoreResource>(
-                    &aptos_types::account_config::fungible_store::primary_store(addr),
+                    &aptos_types::account_config::fungible_store::primary_apt_store(*addr),
                     ObjectGroupResource::struct_tag(),
                     FungibleStoreResource::struct_tag(),
                 )
@@ -868,10 +880,14 @@ impl MoveHarness {
         self.override_one_gas_param("txn.max_transaction_size_in_bytes", 1000 * 1024);
     }
 
-    pub fn sequence_number(&self, addr: &AccountAddress) -> u64 {
+    pub fn sequence_number_opt(&self, addr: &AccountAddress) -> Option<u64> {
         self.read_resource::<AccountResource>(addr, AccountResource::struct_tag())
-            .unwrap()
-            .sequence_number()
+            .as_ref()
+            .map(AccountResource::sequence_number)
+    }
+
+    pub fn sequence_number(&self, addr: &AccountAddress) -> u64 {
+        self.sequence_number_opt(addr).unwrap()
     }
 
     fn chain_id_is_mainnet(&self, addr: &AccountAddress) -> bool {
@@ -961,11 +977,7 @@ impl MoveHarness {
                 offset,
                 txns.len()
             );
-            let mut outputs = harness.run_block_get_output(txns);
-            let _ = outputs
-                .iter_mut()
-                .map(|t| t.fill_error_status())
-                .collect::<Vec<_>>();
+            let outputs = harness.run_block_get_output(txns);
             for (idx, (error, output)) in errors.into_iter().zip(outputs.iter()).enumerate() {
                 if error == SUCCESS {
                     assert_success!(
